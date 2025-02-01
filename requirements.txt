@@ -1,0 +1,8 @@
+pandas
+numpy
+yfinance
+tiingo
+click
+pyyaml
+python-dotenv
+psycopg2
