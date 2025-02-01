@@ -30,3 +30,9 @@ equities:
   # Defensives
   - XLU   # Utilities
   - XLV   # Healthcare
+
+crypto:
+  # Major crypto
+  - BTC-USD
+  - ETH-USD
+  - SOL-USD
