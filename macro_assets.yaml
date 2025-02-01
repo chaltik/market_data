@@ -1,0 +1,32 @@
+equities:
+  # Broad Equities
+  - SPY   # S&P 500
+  - QQQ   # Nasdaq
+  - IWM   # Russell 2000
+
+  # Yield Curve
+  - TLT   # 20Y Bonds
+  - IEF   # 7-10Y Bonds
+  - SHY   # 1-3Y Bonds
+
+  # Commodities
+  - GLD   # Gold
+  - USO   # Oil
+
+  # Inflation Hedges
+  - TIP   # TIPS Bonds
+  - VTIP  # Short-Term TIPS
+
+  # Financials
+  - XLF   # Banks (rate-sensitive)
+
+  # Real Estate
+  - VNQ   # REITs, mortgage sensitivity
+
+  # Cyclicals
+  - XLY   # Consumer Discretionary
+  - XLI   # Industrials
+
+  # Defensives
+  - XLU   # Utilities
+  - XLV   # Healthcare
