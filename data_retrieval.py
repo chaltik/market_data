@@ -129,7 +129,7 @@ def save_crypto_prices(df):
 
 ### ✅ Main Processing ###
 @click.command()
-@click.option('--assets_file', default="macro_assets.json", help="Path to assets JSON file.")
+@click.option('--assets_file', default="macro_assets.yaml", help="Path to assets JSON file.")
 def main(assets_file):
     """Processes equities & crypto, using assets from a JSON file."""
     print(f"🔹 Loading assets from {assets_file}...")
