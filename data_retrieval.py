@@ -95,7 +95,9 @@ def fetch_vix_from_FRED():
 
 def download_treasury_yield_curve(yyyy, n_latest=7):
     csv_url_yyyy = f'https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{yyyy}/all?type=daily_treasury_yield_curve&field_tdr_date_value={yyyy}&page&_format=csv'
-    return pd.read_csv(csv_url_yyyy, nrows=n_latest, index_col=0, parse_dates=True)
+    df = pd.read_csv(csv_url_yyyy, nrows=n_latest, index_col=0, parse_dates=True)
+    df.index = pd.to_datetime(df.index)
+    return df
 
 ### ✅ Storing Data ###
 def save_equity_prices(df):
@@ -131,8 +133,7 @@ def save_crypto_prices(df):
         conn.commit()
 
 def save_treasury_cmt(df):
-    df = df.copy()
-    df = df.rename(columns=lambda x: x.strip())
+    df = df.copy().reset_index()
     df = df.rename(columns={df.columns[0]: "Date"})
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.dropna(subset=["Date"])
@@ -205,16 +206,20 @@ def main(assets_file):
 
     logging.info("🔹 Updating Treasury CMT...")
     cmt_latest = get_latest_date("interest_rates.treasury_cmt", date_col="date")
+    logging.info(f'Latest cmt data stored is for {cmt_latest}')
     today = pd.Timestamp.today().date()
     years = list(range((cmt_latest.year if cmt_latest else 2000), today.year + 1))
     for y in years:
+        logging.info(f'getting UST history for {y}')
         df = download_treasury_yield_curve(y, n_latest=999)
+        logging.info(f'{df.shape[0]} rows downloaded')
         df = df.rename(columns=lambda x: x.strip())
-        df = df.rename(columns={df.columns[0]: "Date"})
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df.dropna(subset=["Date"])
+        # df = df.rename(columns={df.columns[0]: "Date"})
+        # df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        # df = df.dropna(subset=["Date"])
         if cmt_latest:
-            df = df[df["Date"].dt.date > cmt_latest]
+            df = df[df.index > pd.to_datetime(cmt_latest)]
+            logging.info(f'{df.shape[0]} rows needs to be saved')
         save_treasury_cmt(df)
 
     logging.info("✅ Data retrieval and storage complete.")
