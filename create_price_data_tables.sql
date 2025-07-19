@@ -41,5 +41,7 @@ CREATE TABLE IF NOT EXISTS price_data.crypto_daily (
     low NUMERIC,
     close NUMERIC,
     volume NUMERIC NULL,
+    volume_notional NUMERIC NULL,
+    trades_done INTEGER NULL,
     PRIMARY KEY (symbol, date)
 );
