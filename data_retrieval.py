@@ -70,7 +70,7 @@ def save_crypto_metadata(symbol):
             INSERT INTO price_data.crypto (symbol, name, exchange)
             VALUES (%s, %s, %s)
             ON CONFLICT (symbol) DO NOTHING;
-        """, (symbol, symbol, "Yahoo Finance"))
+        """, (symbol, symbol, "TIINGO"))
         conn.commit()
 
 ### ✅ Fetching Data ###
