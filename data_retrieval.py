@@ -74,9 +74,10 @@ def save_crypto_metadata(symbol):
         conn.commit()
 
 ### ✅ Fetching Data ###
-def fetch_equity_prices(symbol):
+def fetch_equity_prices(symbol,start_date=None):
     latest_date = get_latest_date_for_symbol(symbol, "equities_us_daily")
-    start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "1980-01-01"
+    if start_date is None:
+        start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "1980-01-01"
     data = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
     data["symbol"] = symbol
     return data.reset_index().rename(columns={"index": "date"})
@@ -221,7 +222,7 @@ def save_equity_prices(df):
                 ON CONFLICT (symbol, date) DO UPDATE SET
                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                 close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close;
-            """, (row['symbol'], row['date'], row['open'], row['high'], row['low'], row['close'], row.get('volume'), row.get('adjClose')))
+            """, (row['symbol'], row['date'].date(), row['open'], row['high'], row['low'], row['close'], row.get('volume'), row.get('adjClose')))
         conn.commit()
 
 
