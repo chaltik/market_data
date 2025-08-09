@@ -12,18 +12,22 @@ CREATE TABLE IF NOT EXISTS price_data.equities_us (
     industry TEXT NULL
 );
 
--- Table for storing daily equity & ETF prices
+-- Daily equity/ETF prices at NYSE close (stored in UTC)
 CREATE TABLE IF NOT EXISTS price_data.equities_us_daily (
-    symbol TEXT REFERENCES price_data.equities_us(symbol),
-    date DATE NOT NULL,
-    open NUMERIC,
-    high NUMERIC,
-    low NUMERIC,
-    close NUMERIC,
-    volume BIGINT NULL,
-    adj_close NUMERIC NULL,
-    PRIMARY KEY (symbol, date)
+    symbol       TEXT NOT NULL REFERENCES price_data.equities_us(symbol),
+    ts           TIMESTAMPTZ NOT NULL,   -- NYSE market close, converted to UTC
+    open         NUMERIC,
+    high         NUMERIC,
+    low          NUMERIC,
+    close        NUMERIC,
+    volume       BIGINT,
+    adj_close    NUMERIC,
+    PRIMARY KEY (symbol, ts)
 );
+
+-- Helpful for range scans
+CREATE INDEX IF NOT EXISTS equities_us_daily_ts_idx ON price_data.equities_us_daily (ts);
+
 
 -- Table for crypto prices (BTCUSD, ETHUSD, etc.)
 CREATE TABLE IF NOT EXISTS price_data.crypto (

@@ -5,6 +5,7 @@ import pandas as pd
 import pytz
 from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
+import pandas_market_calendars as mcal
 import logging
 from datetime import timedelta
 from dotenv import load_dotenv
@@ -30,8 +31,8 @@ TIINGO_CRYPTO_URL='https://api.tiingo.com/tiingo/crypto/prices'
 utc=pytz.UTC
 
 ### ✅ Helper Functions ###
-def get_latest_date_for_symbol(symbol, table):
-    query = f"SELECT MAX(date) FROM price_data.{table} WHERE symbol = %s"
+def get_latest_ts_for_symbol(symbol, table, ts_col='ts'):
+    query = f"SELECT MAX({ts_col}) FROM price_data.{table} WHERE symbol = %s"
     result = run_sql(query, config(), (symbol,))
     return result.iloc[0, 0] if not result.empty else None
 
@@ -74,21 +75,56 @@ def save_crypto_metadata(symbol):
         conn.commit()
 
 ### ✅ Fetching Data ###
-def fetch_equity_prices(symbol,start_date=None):
-    latest_date = get_latest_date_for_symbol(symbol, "equities_us_daily")
-    if start_date is None:
-        start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "1980-01-01"
-    data = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
-    data["symbol"] = symbol
-    return data.reset_index().rename(columns={"index": "date"})
+# def fetch_equity_prices(symbol,start_date=None):
+#     latest_date = get_latest_date_for_symbol(symbol, "equities_us_daily")
+#     if start_date is None:
+#         start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "1980-01-01"
+#     data = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
+#     data["symbol"] = symbol
+#     return data.reset_index().rename(columns={"index": "date"})
 
+
+def fetch_equity_prices(symbol, start_date=None):
+    latest_ts = get_latest_ts_for_symbol(symbol,"equities_us_daily",ts_col='ts')
+    if start_date is None:
+        if latest_ts is not None:
+            last_ny_date = pd.to_datetime(latest_ts).tz_convert("America/New_York").date()
+            start_date = pd.Timestamp(last_ny_date).strftime("%Y-%m-%d") # guarantee you get back at least one row
+        else:
+            start_date = "1980-01-01"
+
+    # Tiingo daily: 'date' is tz-aware UTC at 00:00 for the trading date
+    ti = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
+    df = ti.reset_index().rename(columns={"index": "date"})
+
+    # NYSE schedule (market_close is tz-aware UTC)
+    nyse = mcal.get_calendar("NYSE")
+    min_utc = pd.to_datetime(df["date"]).min().tz_convert("UTC").date() - timedelta(days=5)
+    max_utc = pd.to_datetime(df["date"]).max().tz_convert("UTC").date() + timedelta(days=5)
+    sched = nyse.schedule(start_date=min_utc, end_date=max_utc)
+
+    # Build join key = UTC trading date for BOTH sides
+    sched_df = pd.DataFrame({"mc_utc": sched["market_close"]})  # tz-aware UTC
+    sched_df["trade_date_utc"] = sched_df["mc_utc"].dt.normalize()  # still UTC midnight
+    df["trade_date_utc"] = pd.to_datetime(df["date"]).dt.tz_convert("UTC").dt.normalize()
+
+    # Join and keep only official NYSE trading days
+    df = df.merge(sched_df[["trade_date_utc", "mc_utc"]], on="trade_date_utc", how="inner")
+
+    # Final timestamp to store: America/New_York close
+    df["ts"] = pd.to_datetime(df["mc_utc"]).dt.tz_convert("America/New_York")
+
+    out = df[["ts", "open", "high", "low", "close", "volume", "adjClose"]].copy()
+    out = out.rename(columns={"adjClose": "adj_close"})
+    out["symbol"] = symbol
+    return out
 
 def fetch_crypto_prices(symbol):
     """
     Fetch crypto price data from Tiingo for a given symbol, starting from the latest date in the DB.
     Returns a DataFrame with columns: date, symbol, open, high, low, close, volume
     """
-    latest_date = get_latest_date_for_symbol(symbol, "crypto_daily")
+    latest_date = get_latest_ts_for_symbol(symbol, "crypto_daily", ts_col="date")
     start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "2010-01-01"
     tk = os.environ['TIINGO_API_KEY']
     url = (
@@ -213,17 +249,36 @@ def compute_release_date(reference_date):
 
 
 ### ✅ Storing Data ###
-def save_equity_prices(df):
-    with get_connection(config()) as (conn, cur):
+# def save_equity_prices(df):
+#     with get_connection(config()) as (conn, cur):
+#         for _, row in df.iterrows():
+#             cur.execute("""
+#                 INSERT INTO price_data.equities_us_daily (symbol, date, open, high, low, close, volume, adj_close)
+#                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+#                 ON CONFLICT (symbol, date) DO UPDATE SET
+#                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+#                 close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close;
+#             """, (row['symbol'], row['date'].date(), row['open'], row['high'], row['low'], row['close'], row.get('volume'), row.get('adjClose')))
+#         conn.commit()
+
+def save_equity_prices(df, conn_params=None):
+    with get_connection(config()) as (conn,cur):
         for _, row in df.iterrows():
             cur.execute("""
-                INSERT INTO price_data.equities_us_daily (symbol, date, open, high, low, close, volume, adj_close)
+                INSERT INTO price_data.equities_us_daily
+                    (symbol, ts, open, high, low, close, volume, adj_close)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (symbol, date) DO UPDATE SET
-                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close;
-            """, (row['symbol'], row['date'].date(), row['open'], row['high'], row['low'], row['close'], row.get('volume'), row.get('adjClose')))
+                ON CONFLICT (symbol, ts) DO UPDATE SET
+                    open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                    close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close;
+            """, (
+                row["symbol"],
+                pd.to_datetime(row["ts"]).to_pydatetime(),  # tz-aware America/New_York
+                row.get("open"), row.get("high"), row.get("low"),
+                row.get("close"), row.get("volume"), row.get("adj_close"),
+            ))
         conn.commit()
+
 
 
 def save_crypto_prices(df):
