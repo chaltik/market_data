@@ -41,9 +41,14 @@ def get_latest_date(table: str, date_col: str = "date"):
     result = run_sql(query, config())
     return result.iloc[0,0] if not result.empty else None
 
-def check_metadata_exists(symbol, table):
-    query = f"SELECT COUNT(*) FROM price_data.{table} WHERE symbol = %s"
+def check_metadata_exists(symbol, table, schema='price_data'):
+    query = f"SELECT COUNT(*) FROM {schema}.{table} WHERE symbol = %s"
     result = run_sql(query, config(), (symbol,))
+    return result.iloc[0, 0] > 0
+
+def check_eco_metadata_exists(series_name):
+    query = f"SELECT COUNT(*) FROM eco.release_content WHERE series_name = %s"
+    result = run_sql(query, config(), (series_name,))
     return result.iloc[0, 0] > 0
 
 def save_equity_metadata(symbol):
@@ -74,6 +79,40 @@ def save_crypto_metadata(symbol):
         """, (symbol, symbol, "TIINGO"))
         conn.commit()
 
+def save_eco_metadata(
+    release_id: int,
+    release_name: str,
+    series_name: str,
+    bls_series_id: str | None = None,
+    fred_series_id: str | None = None,
+    source: str | None = None,
+    country_code: str | None = None,
+):
+    """
+    Insert one row into eco.release_content.
+    If (release_name, series_name) already exists, do nothing.
+    """
+    with get_connection(config()) as (conn, cur):
+        cur.execute(
+            """
+            INSERT INTO eco.release_content
+                (release_id, release_name, series_name, bls_series_id, fred_series_id, source, country_code)
+            VALUES
+                (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (release_name, series_name) DO NOTHING;
+            """,
+            (
+                release_id,
+                release_name,
+                series_name,
+                bls_series_id,
+                fred_series_id,
+                source,
+                country_code,
+            ),
+        )
+        conn.commit()
+
 ### ✅ Fetching Data ###
 def fetch_equity_prices(symbol, start_date=None):
     latest_ts = get_latest_ts_for_symbol(symbol,"equities_us_daily",ts_col='ts')
@@ -83,32 +122,27 @@ def fetch_equity_prices(symbol, start_date=None):
             start_date = pd.Timestamp(last_ny_date).strftime("%Y-%m-%d") # guarantee you get back at least one row
         else:
             start_date = "1980-01-01"
-
     # Tiingo daily: 'date' is tz-aware UTC at 00:00 for the trading date
     ti = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
     df = ti.reset_index().rename(columns={"index": "date"})
-
     # NYSE schedule (market_close is tz-aware UTC)
     nyse = mcal.get_calendar("NYSE")
     min_utc = pd.to_datetime(df["date"]).min().tz_convert("UTC").date() - timedelta(days=5)
     max_utc = pd.to_datetime(df["date"]).max().tz_convert("UTC").date() + timedelta(days=5)
     sched = nyse.schedule(start_date=min_utc, end_date=max_utc)
-
     # Build join key = UTC trading date for BOTH sides
     sched_df = pd.DataFrame({"mc_utc": sched["market_close"]})  # tz-aware UTC
     sched_df["trade_date_utc"] = sched_df["mc_utc"].dt.normalize()  # still UTC midnight
     df["trade_date_utc"] = pd.to_datetime(df["date"]).dt.tz_convert("UTC").dt.normalize()
-
     # Join and keep only official NYSE trading days
     df = df.merge(sched_df[["trade_date_utc", "mc_utc"]], on="trade_date_utc", how="inner")
-
     # Final timestamp to store: America/New_York close
     df["ts"] = pd.to_datetime(df["mc_utc"]).dt.tz_convert("America/New_York")
-
     out = df[["ts", "open", "high", "low", "close", "volume", "adjClose"]].copy()
     out = out.rename(columns={"adjClose": "adj_close"})
     out["symbol"] = symbol
     return out
+
 
 def fetch_crypto_prices(symbol):
     """
@@ -424,6 +458,15 @@ def main(assets_file):
     logging.info("🔹 Updating GSCPI...")
     gscpi_series = download_gscpi()
     if not gscpi_series.empty:
+        if not check_eco_metadata_exists("GCSPI"):
+            logging.info("Inserting metadata for GSCPI")
+            save_eco_metadata(
+            release_id=1,
+            release_name=GSCPI_RELEASE_NAME,
+            series_name=GSCPI_SERIES_NAME,
+            source='FRBNY',
+            country_code='USA',
+            )
         save_gscpi_to_db(gscpi_series)
         logging.info(f"Stored {len(gscpi_series)} GSCPI entries.")
     else:
