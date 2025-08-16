@@ -5,6 +5,7 @@ import pandas as pd
 import pytz
 from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
+import pandas_market_calendars as mcal
 import logging
 from datetime import timedelta
 from dotenv import load_dotenv
@@ -30,8 +31,8 @@ TIINGO_CRYPTO_URL='https://api.tiingo.com/tiingo/crypto/prices'
 utc=pytz.UTC
 
 ### ✅ Helper Functions ###
-def get_latest_date_for_symbol(symbol, table):
-    query = f"SELECT MAX(date) FROM price_data.{table} WHERE symbol = %s"
+def get_latest_ts_for_symbol(symbol, table, ts_col='ts'):
+    query = f"SELECT MAX({ts_col}) FROM price_data.{table} WHERE symbol = %s"
     result = run_sql(query, config(), (symbol,))
     return result.iloc[0, 0] if not result.empty else None
 
@@ -133,7 +134,7 @@ def fetch_crypto_prices(symbol):
     Fetch crypto price data from Tiingo for a given symbol, starting from the latest date in the DB.
     Returns a DataFrame with columns: date, symbol, open, high, low, close, volume
     """
-    latest_date = get_latest_date_for_symbol(symbol, "crypto_daily")
+    latest_date = get_latest_ts_for_symbol(symbol, "crypto_daily", ts_col="date")
     start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "2010-01-01"
     tk = os.environ['TIINGO_API_KEY']
     url = (
@@ -256,19 +257,24 @@ def compute_release_date(reference_date):
     fourth_bday = first_of_next_month + 3 * US_BD  # 0-indexed so +3 gives the 4th business day
     return fourth_bday
 
-
-### ✅ Storing Data ###
-def save_equity_prices(df):
-    with get_connection(config()) as (conn, cur):
+def save_equity_prices(df, conn_params=None):
+    with get_connection(config()) as (conn,cur):
         for _, row in df.iterrows():
             cur.execute("""
-                INSERT INTO price_data.equities_us_daily (symbol, date, open, high, low, close, volume, adj_close)
+                INSERT INTO price_data.equities_us_daily
+                    (symbol, ts, open, high, low, close, volume, adj_close)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (symbol, date) DO UPDATE SET
-                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close;
-            """, (row['symbol'], row['date'].date(), row['open'], row['high'], row['low'], row['close'], row.get('volume'), row.get('adjClose')))
+                ON CONFLICT (symbol, ts) DO UPDATE SET
+                    open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                    close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close;
+            """, (
+                row["symbol"],
+                pd.to_datetime(row["ts"]).to_pydatetime(),  # tz-aware America/New_York
+                row.get("open"), row.get("high"), row.get("low"),
+                row.get("close"), row.get("volume"), row.get("adj_close"),
+            ))
         conn.commit()
+
 
 
 def save_crypto_prices(df):
