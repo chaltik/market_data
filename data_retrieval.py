@@ -75,15 +75,6 @@ def save_crypto_metadata(symbol):
         conn.commit()
 
 ### ✅ Fetching Data ###
-# def fetch_equity_prices(symbol,start_date=None):
-#     latest_date = get_latest_date_for_symbol(symbol, "equities_us_daily")
-#     if start_date is None:
-#         start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "1980-01-01"
-#     data = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
-#     data["symbol"] = symbol
-#     return data.reset_index().rename(columns={"index": "date"})
-
-
 def fetch_equity_prices(symbol, start_date=None):
     latest_ts = get_latest_ts_for_symbol(symbol,"equities_us_daily",ts_col='ts')
     if start_date is None:
@@ -246,20 +237,6 @@ def compute_release_date(reference_date):
     first_of_next_month = reference_date + pd.offsets.MonthBegin(1)
     fourth_bday = first_of_next_month + 3 * US_BD  # 0-indexed so +3 gives the 4th business day
     return fourth_bday
-
-
-### ✅ Storing Data ###
-# def save_equity_prices(df):
-#     with get_connection(config()) as (conn, cur):
-#         for _, row in df.iterrows():
-#             cur.execute("""
-#                 INSERT INTO price_data.equities_us_daily (symbol, date, open, high, low, close, volume, adj_close)
-#                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-#                 ON CONFLICT (symbol, date) DO UPDATE SET
-#                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-#                 close = EXCLUDED.close, volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close;
-#             """, (row['symbol'], row['date'].date(), row['open'], row['high'], row['low'], row['close'], row.get('volume'), row.get('adjClose')))
-#         conn.commit()
 
 def save_equity_prices(df, conn_params=None):
     with get_connection(config()) as (conn,cur):
