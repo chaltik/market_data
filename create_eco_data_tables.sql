@@ -14,9 +14,10 @@ CREATE TABLE IF NOT EXISTS eco.release_content (
 CREATE TABLE IF NOT EXISTS eco.release_schedule (
     release_id BIGINT NOT NULL,
     release_name TEXT,
+    series_name TEXT,
     release_date DATE NOT NULL,
     reference_date DATE NOT NULL,
-    PRIMARY KEY (release_name, date)
+    PRIMARY KEY (release_name, reference_date)
 );
 
 CREATE TABLE IF NOT EXISTS eco.release_data (
