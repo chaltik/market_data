@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS price_data.equities_us_daily (
     PRIMARY KEY (symbol, ts)
 );
 
+
 -- Helpful for range scans
 CREATE INDEX IF NOT EXISTS equities_us_daily_ts_idx ON price_data.equities_us_daily (ts);
 
