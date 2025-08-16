@@ -12,6 +12,7 @@ equities:
   # Commodities
   - GLD   # Gold
   - USO   # Oil
+  - SLV   # Silver
 
   # Inflation Hedges
   - TIP   # TIPS Bonds
@@ -22,17 +23,22 @@ equities:
 
   # Real Estate
   - VNQ   # REITs, mortgage sensitivity
+  - XLRE
 
   # Cyclicals
   - XLY   # Consumer Discretionary
   - XLI   # Industrials
+  - XLE   # Energy
+  - XLC   # Communications
 
   # Defensives
   - XLU   # Utilities
   - XLV   # Healthcare
+  - XLB  # Materials
+  - XLP  # Staples
 
 crypto:
   # Major crypto
-  - BTC-USD
-  - ETH-USD
-  - SOL-USD
+  - BTCUSD
+  - ETHUSD
+  - SOLUSD
