@@ -114,19 +114,34 @@ def save_eco_metadata(
         conn.commit()
 
 ### ✅ Fetching Data ###
-def fetch_equity_prices(symbol,start_date=None):
-    latest_date = get_latest_date_for_symbol(symbol, "equities_us_daily")
-    if latest_date is None:
-        return pd.DataFrame()
+def fetch_equity_prices(symbol, start_date=None):
+    latest_ts = get_latest_ts_for_symbol(symbol,"equities_us_daily",ts_col='ts')
     if start_date is None:
-        start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "1980-01-01"
-    try:
-        data = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
-        data["symbol"] = symbol
-        return data.reset_index().rename(columns={"index": "date"})
-    except Exception as e:
-        logging.info(f'No rows received from tiingo after start_date = {start_date}')
-        return pd.DataFrame()
+        if latest_ts is not None:
+            last_ny_date = pd.to_datetime(latest_ts).tz_convert("America/New_York").date()
+            start_date = pd.Timestamp(last_ny_date).strftime("%Y-%m-%d") # guarantee you get back at least one row
+        else:
+            start_date = "1980-01-01"
+    # Tiingo daily: 'date' is tz-aware UTC at 00:00 for the trading date
+    ti = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
+    df = ti.reset_index().rename(columns={"index": "date"})
+    # NYSE schedule (market_close is tz-aware UTC)
+    nyse = mcal.get_calendar("NYSE")
+    min_utc = pd.to_datetime(df["date"]).min().tz_convert("UTC").date() - timedelta(days=5)
+    max_utc = pd.to_datetime(df["date"]).max().tz_convert("UTC").date() + timedelta(days=5)
+    sched = nyse.schedule(start_date=min_utc, end_date=max_utc)
+    # Build join key = UTC trading date for BOTH sides
+    sched_df = pd.DataFrame({"mc_utc": sched["market_close"]})  # tz-aware UTC
+    sched_df["trade_date_utc"] = sched_df["mc_utc"].dt.normalize()  # still UTC midnight
+    df["trade_date_utc"] = pd.to_datetime(df["date"]).dt.tz_convert("UTC").dt.normalize()
+    # Join and keep only official NYSE trading days
+    df = df.merge(sched_df[["trade_date_utc", "mc_utc"]], on="trade_date_utc", how="inner")
+    # Final timestamp to store: America/New_York close
+    df["ts"] = pd.to_datetime(df["mc_utc"]).dt.tz_convert("America/New_York")
+    out = df[["ts", "open", "high", "low", "close", "volume", "adjClose"]].copy()
+    out = out.rename(columns={"adjClose": "adj_close"})
+    out["symbol"] = symbol
+    return out
 
 
 def fetch_crypto_prices(symbol):
