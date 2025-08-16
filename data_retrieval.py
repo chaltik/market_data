@@ -40,9 +40,14 @@ def get_latest_date(table: str, date_col: str = "date"):
     result = run_sql(query, config())
     return result.iloc[0,0] if not result.empty else None
 
-def check_metadata_exists(symbol, table):
-    query = f"SELECT COUNT(*) FROM price_data.{table} WHERE symbol = %s"
+def check_metadata_exists(symbol, table, schema='price_data'):
+    query = f"SELECT COUNT(*) FROM {schema}.{table} WHERE symbol = %s"
     result = run_sql(query, config(), (symbol,))
+    return result.iloc[0, 0] > 0
+
+def check_eco_metadata_exists(series_name):
+    query = f"SELECT COUNT(*) FROM eco.release_content WHERE series_name = %s"
+    result = run_sql(query, config(), (series_name,))
     return result.iloc[0, 0] > 0
 
 def save_equity_metadata(symbol):
@@ -73,14 +78,54 @@ def save_crypto_metadata(symbol):
         """, (symbol, symbol, "TIINGO"))
         conn.commit()
 
+def save_eco_metadata(
+    release_id: int,
+    release_name: str,
+    series_name: str,
+    bls_series_id: str | None = None,
+    fred_series_id: str | None = None,
+    source: str | None = None,
+    country_code: str | None = None,
+):
+    """
+    Insert one row into eco.release_content.
+    If (release_name, series_name) already exists, do nothing.
+    """
+    with get_connection(config()) as (conn, cur):
+        cur.execute(
+            """
+            INSERT INTO eco.release_content
+                (release_id, release_name, series_name, bls_series_id, fred_series_id, source, country_code)
+            VALUES
+                (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (release_name, series_name) DO NOTHING;
+            """,
+            (
+                release_id,
+                release_name,
+                series_name,
+                bls_series_id,
+                fred_series_id,
+                source,
+                country_code,
+            ),
+        )
+        conn.commit()
+
 ### ✅ Fetching Data ###
 def fetch_equity_prices(symbol,start_date=None):
     latest_date = get_latest_date_for_symbol(symbol, "equities_us_daily")
+    if latest_date is None:
+        return pd.DataFrame()
     if start_date is None:
         start_date = (latest_date + timedelta(days=1)).strftime("%Y-%m-%d") if latest_date else "1980-01-01"
-    data = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
-    data["symbol"] = symbol
-    return data.reset_index().rename(columns={"index": "date"})
+    try:
+        data = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
+        data["symbol"] = symbol
+        return data.reset_index().rename(columns={"index": "date"})
+    except Exception as e:
+        logging.info(f'No rows received from tiingo after start_date = {start_date}')
+        return pd.DataFrame()
 
 
 def fetch_crypto_prices(symbol):
@@ -392,6 +437,15 @@ def main(assets_file):
     logging.info("🔹 Updating GSCPI...")
     gscpi_series = download_gscpi()
     if not gscpi_series.empty:
+        if not check_eco_metadata_exists("GCSPI"):
+            logging.info("Inserting metadata for GSCPI")
+            save_eco_metadata(
+            release_id=1,
+            release_name=GSCPI_RELEASE_NAME,
+            series_name=GSCPI_SERIES_NAME,
+            source='FRBNY',
+            country_code='USA',
+            )
         save_gscpi_to_db(gscpi_series)
         logging.info(f"Stored {len(gscpi_series)} GSCPI entries.")
     else:
