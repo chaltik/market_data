@@ -16,6 +16,7 @@ def get_connection(params):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         # Yield both the connection and cursor
         yield conn, cursor
+        conn.commit()
     except psycopg2.Error as e:
         print(f"Database error: {e}")
         raise
