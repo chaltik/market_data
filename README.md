@@ -145,6 +145,10 @@ PYTHONPATH=. python update_ndx_history.py --asof 2025-09-08
 5 0 * * * cd /path/to/market_data && PYTHONPATH=. python update_ndx_history.py >> logs/ndx_update.log 2>&1
 ```
 
+### Convenience daily update script ###
+
+`ndx_daily_update.sh` will first run the script that updates the index constituents from QQQ holdings. After that it will generate a yaml file that will contain all relevant symbols and will run data retrieval operation for those. Now you have daily values of QQQ holdings together with up-to-date prices.
+
 ### 🔍 SQL Helpers
 
 The helper function `market_indices.constituents_asof(code text, p_asof date)` is defined in `create_market_indices_tables.sql`. Below are usage examples.
