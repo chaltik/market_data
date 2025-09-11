@@ -7,9 +7,10 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
 import pandas_market_calendars as mcal
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime as dtm
 from dotenv import load_dotenv
 from tiingo import TiingoClient
+from tiingo.restclient import RestClientError
 import requests
 import yfinance as yf
 from fredapi import Fred
@@ -29,6 +30,9 @@ ti_client = TiingoClient({'session': True, 'api_key': TIINGO_API_KEY})
 TIINGO_CRYPTO_URL='https://api.tiingo.com/tiingo/crypto/prices'
 
 utc=pytz.UTC
+def utcnow():
+    return dtm.now(utc)
+
 
 ### ✅ Helper Functions ###
 def get_latest_ts_for_symbol(symbol, table, ts_col='ts'):
@@ -51,8 +55,100 @@ def check_eco_metadata_exists(series_name):
     result = run_sql(query, config(), (series_name,))
     return result.iloc[0, 0] > 0
 
-def save_equity_metadata(symbol):
-    metadata = ti_client.get_ticker_metadata(symbol)
+def _is_404(err: Exception) -> bool:
+    s = str(err)
+    return "404" in s or "Not found" in s or "status code: 404" in s
+
+def _safe_yf_name_exchange(symbol: str) -> tuple[str|None, str|None]:
+    try:
+        t = yf.Ticker(symbol)
+        # prefer lightweight .fast_info when available
+        fi = getattr(t, "fast_info", None)
+        exch = getattr(fi, "exchange", None) if fi else None
+        # .info is heavier; only if needed
+        info = getattr(t, "info", None) or {}
+        name = info.get("shortName") or info.get("longName")
+        if not exch:
+            exch = info.get("exchange")
+        return name, exch
+    except Exception:
+        return None, None
+
+def save_equity_metadata(symbol: str):
+    """
+    Upsert metadata; never raise on 404. Return a dict with what we saved.
+    """
+    try:
+        meta = ti_client.get_ticker_metadata(symbol)  # Tiingo
+        if not meta:
+            raise ValueError("empty metadata")
+        # Normalize a minimal payload for your DB
+        payload = {
+            "symbol": symbol,
+            "name": meta.get("name"),
+            "exchange": meta.get("exchangeCode") or meta.get("exchange"),
+            "currency": meta.get("quoteCurrency") or meta.get("priceCurrency"),
+            "start_date": meta.get("startDate"),
+            "end_date": meta.get("endDate"),
+            "provider": "tiingo",
+            "status": "ok",
+            "updated_at": utcnow(),
+        }
+        _upsert_equity_metadata_row(payload)  # your existing upsert
+        return payload
+
+    except (RestClientError, requests.HTTPError) as e:
+        if _is_404(e):
+            logging.warning("Tiingo metadata 404 for %s; marking as tiingo_not_found and continuing.", symbol)
+            # Optional: try to get a friendly name/exchange from yfinance
+            name, exch = _safe_yf_name_exchange(symbol)
+            payload = {
+                "symbol": symbol,
+                "name": name,
+                "exchange": exch,
+                "currency": None,
+                "start_date": None,
+                "end_date": None,
+                "provider": "yfinance_fallback_meta",
+                "status": "tiingo_not_found",
+                "updated_at": utcnow(),
+            }
+            _upsert_equity_metadata_row(payload)
+            return payload
+        else:
+            # Non-404: network hiccup or 5xx. Don't crash the batch; log and skip.
+            logging.error("Tiingo metadata error for %s: %s", symbol, e)
+            payload = {
+                "symbol": symbol,
+                "name": None,
+                "exchange": None,
+                "currency": None,
+                "start_date": None,
+                "end_date": None,
+                "provider": "unknown",
+                "status": "metadata_error",
+                "updated_at": utcnow(),
+            }
+            _upsert_equity_metadata_row(payload)
+            return payload
+
+    except Exception as e:
+        logging.error("Metadata fetch unexpected error for %s: %s", symbol, e)
+        payload = {
+            "symbol": symbol,
+            "name": None,
+            "exchange": None,
+            "currency": None,
+            "start_date": None,
+            "end_date": None,
+            "provider": "unknown",
+            "status": "metadata_exception",
+            "updated_at": utcnow(),
+        }
+        _upsert_equity_metadata_row(payload)
+        return payload
+    
+def _upsert_equity_metadata_row(metadata):
     if metadata:
         with get_connection(config()) as (conn, cur):
             cur.execute("""
@@ -60,7 +156,7 @@ def save_equity_metadata(symbol):
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (symbol) DO NOTHING;
             """, (
-                symbol,
+                metadata.get("symbol"),
                 metadata.get("name"),
                 "stock",
                 metadata.get("exchangeCode"),
@@ -115,32 +211,142 @@ def save_eco_metadata(
 
 ### ✅ Fetching Data ###
 def fetch_equity_prices(symbol, start_date=None):
-    latest_ts = get_latest_ts_for_symbol(symbol,"equities_us_daily",ts_col='ts')
+    """
+    Return DataFrame with columns:
+      ts (America/New_York close), open, high, low, close, volume, adj_close, symbol
+
+    Path A (preferred): Tiingo daily.
+      - tiingo 'date' is UTC midnight of trading date -> map to NYSE market_close.
+      - Use 'adjClose' if present; else fall back to 'close'.
+
+    Path B (fallback): yfinance history().
+      - Index is usually America/New_York at 00:00 wall time for each trading date.
+      - We join to NYSE schedule to set ts to that day’s 16:00 ET market close.
+      - Use 'Adj Close' if present; else fall back to 'Close'.
+    """
+
+    latest_ts = get_latest_ts_for_symbol(symbol, "equities_us_daily", ts_col="ts")
     if start_date is None:
         if latest_ts is not None:
             last_ny_date = pd.to_datetime(latest_ts).tz_convert("America/New_York").date()
-            start_date = pd.Timestamp(last_ny_date).strftime("%Y-%m-%d") # guarantee you get back at least one row
+            # ensure we fetch at least one row even if already up to date
+            start_date = pd.Timestamp(last_ny_date).strftime("%Y-%m-%d")
         else:
             start_date = "1980-01-01"
-    # Tiingo daily: 'date' is tz-aware UTC at 00:00 for the trading date
-    ti = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
-    df = ti.reset_index().rename(columns={"index": "date"})
-    # NYSE schedule (market_close is tz-aware UTC)
+
     nyse = mcal.get_calendar("NYSE")
-    min_utc = pd.to_datetime(df["date"]).min().tz_convert("UTC").date() - timedelta(days=5)
-    max_utc = pd.to_datetime(df["date"]).max().tz_convert("UTC").date() + timedelta(days=5)
-    sched = nyse.schedule(start_date=min_utc, end_date=max_utc)
-    # Build join key = UTC trading date for BOTH sides
-    sched_df = pd.DataFrame({"mc_utc": sched["market_close"]})  # tz-aware UTC
-    sched_df["trade_date_utc"] = sched_df["mc_utc"].dt.normalize()  # still UTC midnight
-    df["trade_date_utc"] = pd.to_datetime(df["date"]).dt.tz_convert("UTC").dt.normalize()
-    # Join and keep only official NYSE trading days
-    df = df.merge(sched_df[["trade_date_utc", "mc_utc"]], on="trade_date_utc", how="inner")
-    # Final timestamp to store: America/New_York close
-    df["ts"] = pd.to_datetime(df["mc_utc"]).dt.tz_convert("America/New_York")
-    out = df[["ts", "open", "high", "low", "close", "volume", "adjClose"]].copy()
-    out = out.rename(columns={"adjClose": "adj_close"})
+
+    # ---------------------------
+    # Path A: Tiingo first
+    # ---------------------------
+    try:
+        ti = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
+        if ti is None or len(ti) == 0:
+            raise ValueError("Tiingo returned no rows")
+
+        df = ti.reset_index().rename(columns={"index": "date"})
+        # tiingo 'date' should be tz-aware (UTC). Normalize to UTC midnight (date key).
+        dts = pd.to_datetime(df["date"], utc=True)
+        df["trade_date_utc"] = dts.dt.tz_convert("UTC").dt.normalize()
+
+        # Build calendar window
+        min_utc = dts.min().tz_convert("UTC").date() - timedelta(days=5)
+        max_utc = dts.max().tz_convert("UTC").date() + timedelta(days=5)
+        sched = nyse.schedule(start_date=min_utc, end_date=max_utc)
+
+        # Join on trading date in UTC; pick market close
+        sched_df = pd.DataFrame({"mc_utc": sched["market_close"]})
+        sched_df["trade_date_utc"] = sched_df["mc_utc"].dt.normalize()
+
+        df = df.merge(sched_df[["trade_date_utc", "mc_utc"]], on="trade_date_utc", how="inner")
+        df["ts"] = df["mc_utc"].dt.tz_convert("America/New_York")
+
+        # Map columns
+        # Tiingo typical columns: open, high, low, close, volume, adjClose (camelCase)
+        out = pd.DataFrame({
+            "ts": df["ts"],
+            "open": pd.to_numeric(df.get("open"), errors="coerce"),
+            "high": pd.to_numeric(df.get("high"), errors="coerce"),
+            "low": pd.to_numeric(df.get("low"), errors="coerce"),
+            "close": pd.to_numeric(df.get("close"), errors="coerce"),
+            "volume": pd.to_numeric(df.get("volume"), errors="coerce"),
+        })
+        # adjClose may be present; if not, fall back to close
+        if "adjClose" in df.columns:
+            out["adj_close"] = pd.to_numeric(df["adjClose"], errors="coerce")
+        elif "adj_close" in df.columns:
+            out["adj_close"] = pd.to_numeric(df["adj_close"], errors="coerce")
+        else:
+            out["adj_close"] = out["close"]
+
+        out["symbol"] = symbol
+        out = out.dropna(subset=["ts", "close"])  # keep only valid rows
+        return out
+
+    except Exception as e:
+        logging.warning("Tiingo failed for %s (%s); falling back to yfinance", symbol, e)
+
+    # ---------------------------
+    # Path B: yfinance fallback
+    # ---------------------------
+    import yfinance as yf
+
+    px = yf.Ticker(symbol).history(
+        start=start_date,
+        auto_adjust=False,  # ensure 'Adj Close' (if available) is separate from 'Close'
+        actions=True
+    )
+
+    if px.empty:
+        # nothing we can do
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume", "adj_close", "symbol"])
+
+    # yfinance index tz: usually America/New_York at 00:00 for the trading date
+    if px.index.tz is None:
+        px.index = px.index.tz_localize("America/New_York")
+
+    # Build NYSE schedule for padded range (in NY)
+    min_ny = px.index.min().tz_convert("America/New_York").date() - timedelta(days=5)
+    max_ny = px.index.max().tz_convert("America/New_York").date() + timedelta(days=5)
+    sched = nyse.schedule(start_date=min_ny, end_date=max_ny)
+
+    sched_df = pd.DataFrame({"mc_utc": sched["market_close"]})
+    # Normalize to NY midnight to create a join key in local wall time
+    sched_df["trade_date_ny"] = sched_df["mc_utc"].dt.tz_convert("America/New_York").dt.normalize()
+
+    df = px.copy()
+    df["trade_date_ny"] = pd.to_datetime(df.index).tz_convert("America/New_York").normalize()
+    df = df.merge(sched_df[["trade_date_ny", "mc_utc"]], on="trade_date_ny", how="inner")
+    df["ts"] = df["mc_utc"].dt.tz_convert("America/New_York")
+
+    # Map columns from yfinance:
+    # Open, High, Low, Close, Volume, (optional) Adj Close, Dividends, Stock Splits, Capital Gains
+    def _pick(name):
+        # tolerate different cases/spaces
+        for c in df.columns:
+            if c.replace(" ", "").lower() == name.replace(" ", "").lower():
+                return c
+        return None
+
+    col_open  = _pick("Open")
+    col_high  = _pick("High")
+    col_low   = _pick("Low")
+    col_close = _pick("Close")
+    col_vol   = _pick("Volume")
+    col_adj   = _pick("Adj Close")  # may be None
+
+    out = pd.DataFrame({
+        "ts": df["ts"],
+        "open": pd.to_numeric(df[col_open], errors="coerce") if col_open else pd.NA,
+        "high": pd.to_numeric(df[col_high], errors="coerce") if col_high else pd.NA,
+        "low": pd.to_numeric(df[col_low], errors="coerce") if col_low else pd.NA,
+        "close": pd.to_numeric(df[col_close], errors="coerce") if col_close else pd.NA,
+        "volume": pd.to_numeric(df[col_vol], errors="coerce") if col_vol else pd.NA,
+        "adj_close": pd.to_numeric(df[col_adj], errors="coerce") if col_adj else pd.to_numeric(df[col_close], errors="coerce"),
+    })
+
     out["symbol"] = symbol
+    out = out.dropna(subset=["ts", "close"])
     return out
 
 
@@ -401,12 +607,15 @@ def save_gscpi_to_db(df):
 def main(assets_file):
     logging.info(f"🔹 Loading assets from {assets_file}...")
     with open(assets_file, "r") as f:
-        assets = yaml.safe_load(f)
-    equity_symbols = assets.get("equities", [])
+        assets = yaml.load(f, Loader=yaml.BaseLoader)  # all scalars as strings
+    equity_symbols = list(map(str, assets.get("equities", [])))
+    
     crypto_symbols = assets.get("crypto", [])
-
+    
     logging.info("🔹 Processing Equities...")
     for symbol in equity_symbols:
+        logging.info(f'Processing {symbol}')
+        logging.info(f'Do we have {symbol} metadata?')
         if not check_metadata_exists(symbol, "equities_us"):
             logging.info(f"Fetching metadata for {symbol}...")
             save_equity_metadata(symbol)
