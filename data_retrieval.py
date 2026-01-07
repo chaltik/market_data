@@ -601,6 +601,236 @@ def save_gscpi_to_db(df):
 
         conn.commit()
 
+
+
+# ----------------------------
+# Economic data from FRED/ALFRED
+# ----------------------------
+
+_FRED_OBS_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+def _fetch_alfred_observations(
+    fred_series_id: str,
+    observation_start: str | None = None,
+    observation_end: str | None = None,
+) -> pd.DataFrame:
+    """
+    Pull *all vintages* for a FRED series via the ALFRED mechanism:
+    GET /fred/series/observations with realtime_start=1776-07-04, realtime_end=9999-12-31.
+
+    Returns a DataFrame with columns:
+      realtime_start, realtime_end, date, value
+    """
+    api_key = os.environ["FRED_API_KEY"]
+
+    params = {
+        "series_id": fred_series_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "realtime_start": "1776-07-04",
+        "realtime_end": "9999-12-31",
+        "limit": 100000,
+        "offset": 0,
+        "sort_order": "asc",
+    }
+    if observation_start:
+        params["observation_start"] = observation_start
+    if observation_end:
+        params["observation_end"] = observation_end
+
+    obs = []
+    while True:
+        r = requests.get(_FRED_OBS_URL, params=params, timeout=60)
+        r.raise_for_status()
+        payload = r.json()
+        batch = payload.get("observations", []) or []
+        if not batch:
+            break
+        obs.extend(batch)
+
+        count = int(payload.get("count", len(obs)))
+        params["offset"] = int(params["offset"]) + int(params["limit"])
+        if len(obs) >= count:
+            break
+
+    if not obs:
+        return pd.DataFrame(columns=["realtime_start", "realtime_end", "date", "value"])
+
+    df = pd.DataFrame(obs)
+    df["realtime_start"] = pd.to_datetime(df["realtime_start"], errors="coerce").dt.date
+    df["realtime_end"] = pd.to_datetime(df["realtime_end"], errors="coerce").dt.date
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+
+    # Some values are "." (missing) in FRED JSON
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["date"])
+    return df
+
+
+def fetch_eco_from_fred(
+    fred_series_id: str,
+    observation_start: str | None = None,
+    observation_end: str | None = None,
+    series_name: str | None = None,
+    release_name: str | None = None,
+) -> pd.DataFrame:
+    """
+    Fetch an economic series from FRED with *correct* first-release dates computed from ALFRED vintages.
+
+    Output (one row per reference_date / observation date):
+      - fred_series_id
+      - series_name
+      - release_name
+      - release_id         (YYYYMMDD of release_date)
+      - release_date       (first vintage realtime_start for that reference_date)
+      - reference_date     (the observation date)
+      - value              (latest available vintage value for that reference_date)
+
+    Notes:
+      - 'release_name' is your own labeling. FRED doesn't provide it.
+      - We treat the *first appearance* of an observation (min realtime_start) as the release date.
+      - We treat the *latest* value as the one with realtime_end == 9999-12-31 (when present), else max realtime_end.
+    """
+    series_name = series_name or fred_series_id
+    release_name = release_name or series_name
+
+    vint = _fetch_alfred_observations(
+        fred_series_id=fred_series_id,
+        observation_start=observation_start,
+        observation_end=observation_end,
+    )
+    if vint.empty:
+        return pd.DataFrame(
+            columns=[
+                "fred_series_id",
+                "series_name",
+                "release_name",
+                "release_id",
+                "release_date",
+                "reference_date",
+                "value",
+            ]
+        )
+
+    first_release = (
+        vint.groupby("date", as_index=False)["realtime_start"]
+        .min()
+        .rename(columns={"date": "reference_date", "realtime_start": "release_date"})
+    )
+
+    # Latest value per reference_date
+    latest_end_sentinel = dtm.strptime("9999-12-31", "%Y-%m-%d").date()
+    is_latest = (vint["realtime_end"] == latest_end_sentinel)
+    if is_latest.any():
+        latest = vint[is_latest].copy()
+        latest = latest.sort_values(["date", "realtime_start"]).drop_duplicates("date", keep="last")
+    else:
+        latest = vint.sort_values(["date", "realtime_end", "realtime_start"]).drop_duplicates("date", keep="last")
+
+    latest = latest[["date", "value"]].rename(columns={"date": "reference_date"})
+
+    out = first_release.merge(latest, on="reference_date", how="left")
+    out["fred_series_id"] = fred_series_id
+    out["series_name"] = series_name
+    out["release_name"] = release_name
+
+    out["release_date"] = pd.to_datetime(out["release_date"])
+    out["release_id"] = out["release_date"].dt.strftime("%Y%m%d").astype(int)
+
+    out["reference_date"] = pd.to_datetime(out["reference_date"])
+    out = out.dropna(subset=["release_date", "reference_date"])
+
+    return out[
+        [
+            "fred_series_id",
+            "series_name",
+            "release_name",
+            "release_id",
+            "release_date",
+            "reference_date",
+            "value",
+        ]
+    ].sort_values(["reference_date"])
+
+
+def save_eco_from_fred_to_db(
+    df: pd.DataFrame,
+    source: str = "FRED/ALFRED",
+    country_code: str = "USA",
+):
+    """
+    Save economic release schedule + release data into:
+      - eco.release_schedule
+      - eco.release_data
+
+    Also ensures eco.release_content has a row for (release_name, series_name).
+    """
+    if df is None or df.empty:
+        return
+
+    required = {"release_id", "release_name", "series_name", "release_date", "reference_date", "value", "fred_series_id"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"save_eco_from_fred_to_db: missing required columns: {sorted(missing)}")
+
+    # Ensure metadata exists (release_content)
+    meta_rows = (
+        df[["release_name", "series_name", "fred_series_id"]]
+        .drop_duplicates()
+        .to_dict("records")
+    )
+    for m in meta_rows:
+        if not check_eco_metadata_exists(m["series_name"]):
+            rid = int(df["release_id"].min())
+            save_eco_metadata(
+                release_id=rid,
+                release_name=m["release_name"],
+                series_name=m["series_name"],
+                fred_series_id=m["fred_series_id"],
+                source=source,
+                country_code=country_code,
+            )
+
+    with get_connection(config()) as (conn, cur):
+        for _, row in df.iterrows():
+            cur.execute(
+                """
+                INSERT INTO eco.release_schedule (release_id, release_name, release_date, reference_date)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (release_name, reference_date) DO UPDATE
+                SET release_date = EXCLUDED.release_date,
+                    release_id   = EXCLUDED.release_id;
+                """,
+                (
+                    int(row["release_id"]),
+                    row["release_name"],
+                    pd.to_datetime(row["release_date"]).to_pydatetime(),
+                    pd.to_datetime(row["reference_date"]).to_pydatetime(),
+                ),
+            )
+
+            cur.execute(
+                """
+                INSERT INTO eco.release_data (release_id, release_name, series_name, release_date, reference_date, value)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (release_name, series_name, reference_date) DO UPDATE
+                SET value       = EXCLUDED.value,
+                    release_date = EXCLUDED.release_date,
+                    release_id   = EXCLUDED.release_id;
+                """,
+                (
+                    int(row["release_id"]),
+                    row["release_name"],
+                    row["series_name"],
+                    pd.to_datetime(row["release_date"]).to_pydatetime(),
+                    pd.to_datetime(row["reference_date"]).to_pydatetime(),
+                    None if pd.isna(row["value"]) else float(row["value"]),
+                ),
+            )
+
+        conn.commit()
+
+
 ### ✅ Main ###
 @click.command()
 @click.option('--assets_file', default="macro_assets.yaml", help="Path to assets YAML file.")
@@ -667,7 +897,7 @@ def main(assets_file):
     logging.info("🔹 Updating GSCPI...")
     gscpi_series = download_gscpi()
     if not gscpi_series.empty:
-        if not check_eco_metadata_exists("GCSPI"):
+        if not check_eco_metadata_exists("GSCPI"):
             logging.info("Inserting metadata for GSCPI")
             save_eco_metadata(
             release_id=1,
@@ -681,7 +911,35 @@ def main(assets_file):
     else:
         logging.info("No new GSCPI data to store.")
         
-    logging.info("✅ Data retrieval and storage complete.")
+    
+    logging.info("🔹 Updating Economic Releases from FRED/ALFRED (with true release dates)...")
+    eco_series = [
+        # (fred_series_id, series_name, release_name)
+        ("CPIAUCSL", "CPI", "CPI (Headline, SA)"),
+        ("INDPRO", "Industrial Production", "Industrial Production Index"),
+        ("UMCSENT", "Michigan Consumer Sentiment", "U. Michigan Consumer Sentiment Index"),
+        ("UNRATE", "Unemployment Rate", "Unemployment Rate (BLS)"),
+        ("PAYEMS", "Nonfarm Payroll Employment", "Nonfarm Payrolls"),
+    ]
+
+    for fred_series_id, series_name, release_name in eco_series:
+        try:
+            logging.info(f"Fetching {series_name} ({fred_series_id}) vintages via ALFRED...")
+            df_eco = fetch_eco_from_fred(
+                fred_series_id,
+                observation_start="1990-01-01",
+                series_name=series_name,
+                release_name=release_name,
+            )
+            if df_eco.empty:
+                logging.info(f"No data returned for {fred_series_id}.")
+                continue
+            save_eco_from_fred_to_db(df_eco, source="FRED/ALFRED", country_code="USA")
+            logging.info(f"Upserted {len(df_eco)} rows for {series_name}.")
+        except Exception as e:
+            logging.error(f"Failed updating {fred_series_id}: {e}")
+
+logging.info("✅ Data retrieval and storage complete.")
 
 if __name__ == "__main__":
     main()
