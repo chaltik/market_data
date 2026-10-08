@@ -14,3 +14,4 @@ s3fs
 fsspec
 fredapi
 requests
+pandas_market_calendars
