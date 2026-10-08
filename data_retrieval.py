@@ -210,7 +210,7 @@ def save_eco_metadata(
         conn.commit()
 
 ### ✅ Fetching Data ###
-def fetch_equity_prices(symbol, start_date=None):
+def fetch_equity_prices(symbol, start_date=None, end_date=None):
     """
     Return DataFrame with columns:
       ts (America/New_York close), open, high, low, close, volume, adj_close, symbol
@@ -240,7 +240,10 @@ def fetch_equity_prices(symbol, start_date=None):
     # Path A: Tiingo first
     # ---------------------------
     try:
-        ti = ti_client.get_dataframe(symbol, frequency="daily", startDate=start_date)
+        tiingo_kwargs = {"frequency": "daily", "startDate": start_date}
+        if end_date is not None:
+            tiingo_kwargs["endDate"] = end_date
+        ti = ti_client.get_dataframe(symbol, **tiingo_kwargs)
         if ti is None or len(ti) == 0:
             raise ValueError("Tiingo returned no rows")
 
@@ -291,11 +294,15 @@ def fetch_equity_prices(symbol, start_date=None):
     # ---------------------------
     import yfinance as yf
 
-    px = yf.Ticker(symbol).history(
-        start=start_date,
-        auto_adjust=False,  # ensure 'Adj Close' (if available) is separate from 'Close'
-        actions=True
-    )
+    history_kwargs = {
+        "start": start_date,
+        "auto_adjust": False,  # ensure 'Adj Close' stays separate from 'Close'
+        "actions": True,
+    }
+    if end_date is not None:
+        # yfinance treats `end` as exclusive; the importer treats it as inclusive.
+        history_kwargs["end"] = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    px = yf.Ticker(symbol).history(**history_kwargs)
 
     if px.empty:
         # nothing we can do
@@ -638,9 +645,39 @@ def _fetch_alfred_observations(
     if observation_end:
         params["observation_end"] = observation_end
 
+    # PUBLICATION LAG assumed for series that carry NO vintage history.
+    #
+    # FRED rejects the all-vintages request (HTTP 400) for its own CALCULATED
+    # daily series -- DFII5, DFII10, T5YIE, T10YIE all fail, while WALCL and
+    # DTWEXBGS succeed. The distinction is revision: a series that is never
+    # revised has no vintages to return, so ALFRED has nothing to serve.
+    #
+    # That is a statement about availability, and it has to be modelled rather
+    # than ignored. These are Treasury/market rates: the curve is published
+    # around 15:30 ET and FRED posts it the same evening, so the value for day
+    # t is readable by an observer on day t+1 but NOT during day t's session.
+    # Setting release_date = reference_date would claim same-day knowledge of a
+    # number published after the close.
+    #
+    # One business day is therefore the conservative and correct convention,
+    # and it is an ASSUMPTION -- flagged in the returned frame as
+    # `vintage_source='observations'` so downstream code can tell a measured
+    # release date from an imputed one.
+    NO_VINTAGE_LAG_BDAYS = 1
+
     obs = []
+    used_vintages = True
     while True:
         r = requests.get(_FRED_OBS_URL, params=params, timeout=60)
+        if r.status_code == 400 and used_vintages:
+            # No vintage history for this series -- fall back to plain
+            # observations, which is the only thing FRED will serve for it.
+            used_vintages = False
+            params = {k: v for k, v in params.items()
+                      if k not in ("realtime_start", "realtime_end")}
+            params["offset"] = 0
+            obs = []
+            continue
         r.raise_for_status()
         payload = r.json()
         batch = payload.get("observations", []) or []
@@ -654,13 +691,26 @@ def _fetch_alfred_observations(
             break
 
     if not obs:
-        return pd.DataFrame(columns=["realtime_start", "realtime_end", "date", "value"])
+        return pd.DataFrame(columns=["realtime_start", "realtime_end", "date",
+                                      "value", "vintage_source"])
 
     df = pd.DataFrame(obs)
-    df["realtime_start"] = pd.to_datetime(df["realtime_start"], errors="coerce").dt.date
-    df["realtime_end"] = pd.to_datetime(df["realtime_end"], errors="coerce").dt.date
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
+    if used_vintages:
+        df["realtime_start"] = pd.to_datetime(df["realtime_start"], errors="coerce").dt.date
+        df["realtime_end"] = pd.to_datetime(df["realtime_end"], errors="coerce").dt.date
+        df["vintage_source"] = "alfred"
+    else:
+        # No vintages: impute availability as one business day after the
+        # observation, and say so in the frame. realtime_end is open-ended
+        # because a never-revised value is never superseded.
+        rs = df["date"] + pd.tseries.offsets.BDay(NO_VINTAGE_LAG_BDAYS)
+        df["realtime_start"] = rs.dt.date
+        df["realtime_end"] = pd.Timestamp("9999-12-31").date()
+        df["vintage_source"] = "observations"
+
+    df["date"] = df["date"].dt.date
     # Some values are "." (missing) in FRED JSON
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["date"])
@@ -834,7 +884,35 @@ def save_eco_from_fred_to_db(
 ### ✅ Main ###
 @click.command()
 @click.option('--assets_file', default="macro_assets.yaml", help="Path to assets YAML file.")
-def main(assets_file):
+@click.option('--eco-only', is_flag=True, default=False,
+              help="Skip equities/crypto/VIX/CMT/GSCPI; refresh only the FRED "
+                   "economic series. Use with --eco-series to target a few.")
+@click.option('--assets-only', is_flag=True, default=False,
+              help="Refresh only the assets in --assets_file; skip the FRED "
+                   "economic series entirely. The eco block issues an ALFRED "
+                   "vintage request per series and dominates the runtime, so "
+                   "pulling a handful of new tickers does not need it.")
+# Explicit parameter name: `eco_series` is ALREADY a local inside main() -- the
+# list of (id, name, release) tuples built from the YAML -- so letting click
+# derive that name from --eco-series shadowed the CLI value with a list, and the
+# filter below died on list.split(). Named apart so the two cannot collide.
+@click.option('--eco-series', 'eco_series_filter', default=None,
+              help="Comma-separated fred_series_id list to refresh, filtered "
+                   "from macro_series.yaml. Default: every series in the file.")
+def main(assets_file, eco_only, assets_only, eco_series_filter):
+    """Refresh market and macro data into coredata.
+
+    The full run touches every asset in macro_assets.yaml plus all ~84 FRED
+    series, which is many minutes of ALFRED vintage requests. When only a
+    handful of series need refreshing -- a newly added one, or a series whose
+    vintage coverage turned out to be short -- --eco-only --eco-series avoids
+    re-pulling everything else to get at them. The YAML stays the single
+    definition of what exists; these flags only narrow what runs.
+    """
+    if eco_only and assets_only:
+        raise click.UsageError("--eco-only and --assets-only are mutually "
+                               "exclusive; passing both would skip everything.")
+
     logging.info(f"🔹 Loading assets from {assets_file}...")
     with open(assets_file, "r") as f:
         assets = yaml.load(f, Loader=yaml.BaseLoader)  # all scalars as strings
@@ -842,8 +920,9 @@ def main(assets_file):
     
     crypto_symbols = assets.get("crypto", [])
     
-    logging.info("🔹 Processing Equities...")
-    for symbol in equity_symbols:
+    if eco_only:
+        logging.info("🔹 --eco-only: skipping equities, crypto, VIX, CMT, GSCPI.")
+    for symbol in ([] if eco_only else equity_symbols):
         logging.info(f'Processing {symbol}')
         logging.info(f'Do we have {symbol} metadata?')
         if not check_metadata_exists(symbol, "equities_us"):
@@ -855,8 +934,7 @@ def main(assets_file):
             save_equity_prices(df)
             logging.info(f"Stored {symbol} equity data.")
 
-    logging.info("🔹 Processing Crypto...")
-    for symbol in crypto_symbols:
+    for symbol in ([] if eco_only else crypto_symbols):
         if not check_metadata_exists(symbol, "crypto"):
             logging.info(f"Fetching metadata for {symbol}...")
             save_crypto_metadata(symbol)
@@ -868,61 +946,92 @@ def main(assets_file):
             save_crypto_prices(df)
             logging.info(f"Stored {symbol} crypto data.")
 
-    logging.info("🔹 Updating VIX...")
-    vix_latest = pd.to_datetime(get_latest_date("market_indices.vix"))
-    vix_series = fetch_vix_from_FRED()
-    if vix_latest:
-        vix_series = vix_series[vix_series.index > vix_latest]
-    save_index_to_db(vix_series, "market_indices.vix")
-    logging.info(f"Stored {len(vix_series)} new VIX entries.")
+    # VIX / Treasury CMT / GSCPI: market and rate data, not FRED economic
+    # releases. --eco-only skips the whole block, not just its log lines --
+    # gating the logging alone would leave the work running silently, which
+    # is how a 'skip' flag ends up doing nothing while appearing to work.
+    if not eco_only:
+        logging.info("🔹 Updating VIX...")
+        vix_latest = pd.to_datetime(get_latest_date("market_indices.vix"))
+        vix_series = fetch_vix_from_FRED()
+        if vix_latest:
+            vix_series = vix_series[vix_series.index > vix_latest]
+        save_index_to_db(vix_series, "market_indices.vix")
+        logging.info(f"Stored {len(vix_series)} new VIX entries.")
 
-    logging.info("🔹 Updating Treasury CMT...")
-    cmt_latest = get_latest_date("interest_rates.treasury_cmt", date_col="date")
-    logging.info(f'Latest cmt data stored is for {cmt_latest}')
-    today = pd.Timestamp.today().date()
-    years = list(range((cmt_latest.year if cmt_latest else 2000), today.year + 1))
-    for y in years:
-        logging.info(f'getting UST history for {y}')
-        df = download_treasury_yield_curve(y, n_latest=999)
-        logging.info(f'{df.shape[0]} rows downloaded')
-        df = df.rename(columns=lambda x: x.strip())
-        # df = df.rename(columns={df.columns[0]: "Date"})
-        # df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        # df = df.dropna(subset=["Date"])
-        if cmt_latest:
-            df = df[df.index > pd.to_datetime(cmt_latest)]
-            logging.info(f'{df.shape[0]} rows needs to be saved')
-        save_treasury_cmt(df)
+        logging.info("🔹 Updating Treasury CMT...")
+        cmt_latest = get_latest_date("interest_rates.treasury_cmt", date_col="date")
+        logging.info(f'Latest cmt data stored is for {cmt_latest}')
+        today = pd.Timestamp.today().date()
+        years = list(range((cmt_latest.year if cmt_latest else 2000), today.year + 1))
+        for y in years:
+            logging.info(f'getting UST history for {y}')
+            df = download_treasury_yield_curve(y, n_latest=999)
+            logging.info(f'{df.shape[0]} rows downloaded')
+            df = df.rename(columns=lambda x: x.strip())
+            # df = df.rename(columns={df.columns[0]: "Date"})
+            # df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            # df = df.dropna(subset=["Date"])
+            if cmt_latest:
+                df = df[df.index > pd.to_datetime(cmt_latest)]
+                logging.info(f'{df.shape[0]} rows needs to be saved')
+            save_treasury_cmt(df)
 
-    logging.info("🔹 Updating GSCPI...")
-    gscpi_series = download_gscpi()
-    if not gscpi_series.empty:
-        if not check_eco_metadata_exists("GSCPI"):
-            logging.info("Inserting metadata for GSCPI")
-            save_eco_metadata(
-            release_id=1,
-            release_name=GSCPI_RELEASE_NAME,
-            series_name=GSCPI_SERIES_NAME,
-            source='FRBNY',
-            country_code='USA',
-            )
-        save_gscpi_to_db(gscpi_series)
-        logging.info(f"Stored {len(gscpi_series)} GSCPI entries.")
-    else:
-        logging.info("No new GSCPI data to store.")
+        logging.info("🔹 Updating GSCPI...")
+        gscpi_series = download_gscpi()
+        if not gscpi_series.empty:
+            if not check_eco_metadata_exists("GSCPI"):
+                logging.info("Inserting metadata for GSCPI")
+                save_eco_metadata(
+                release_id=1,
+                release_name=GSCPI_RELEASE_NAME,
+                series_name=GSCPI_SERIES_NAME,
+                source='FRBNY',
+                country_code='USA',
+                )
+            save_gscpi_to_db(gscpi_series)
+            logging.info(f"Stored {len(gscpi_series)} GSCPI entries.")
+        else:
+            logging.info("No new GSCPI data to store.")
         
     
-    logging.info("🔹 Updating Economic Releases from FRED/ALFRED (with true release dates)...")
-    eco_series = [
-        # (fred_series_id, series_name, release_name)
-        ("CPIAUCSL", "CPI", "CPI (Headline, SA)"),
-        ("INDPRO", "Industrial Production", "Industrial Production Index"),
-        ("UMCSENT", "Michigan Consumer Sentiment", "U. Michigan Consumer Sentiment Index"),
-        ("UNRATE", "Unemployment Rate", "Unemployment Rate (BLS)"),
-        ("PAYEMS", "Nonfarm Payroll Employment", "Nonfarm Payrolls"),
-    ]
+    # As with --eco-only above: the flag must skip the WORK, not just the log
+    # line. Returning here is the whole point of --assets-only -- the loop
+    # below issues one ALFRED vintage request per series across ~84 series and
+    # is what makes a full run take many minutes.
+    if assets_only:
+        logging.info("🔹 --assets-only: skipping FRED economic series.")
+        logging.info("✅ Data retrieval and storage complete.")
+        return
 
-    for fred_series_id, series_name, release_name in eco_series:
+    logging.info("🔹 Updating Economic Releases from FRED/ALFRED (with true release dates)...")
+    macro_series_file = os.path.join(os.path.dirname(__file__), "macro_series.yaml")
+    with open(macro_series_file) as _f:
+        _macro_cfg = yaml.safe_load(_f)
+    eco_series = [
+        (s["fred_series_id"], s["series_name"], s["release_name"])
+        for group in _macro_cfg.values()
+        for s in group
+    ]
+    # Deduplicate: same (fred_series_id, series_name) may appear in multiple groups
+    seen = set()
+    eco_series_deduped = []
+    for item in eco_series:
+        key = (item[0], item[1])
+        if key not in seen:
+            seen.add(key)
+            eco_series_deduped.append(item)
+
+    if eco_series_filter:
+        wanted = {x.strip() for x in eco_series_filter.split(",") if x.strip()}
+        before = len(eco_series_deduped)
+        eco_series_deduped = [t for t in eco_series_deduped if t[0] in wanted]
+        missing = wanted - {t[0] for t in eco_series_deduped}
+        logging.info(f"--eco-series: {len(eco_series_deduped)} of {before} selected")
+        if missing:
+            logging.warning(f"not found in macro_series.yaml: {sorted(missing)}")
+
+    for fred_series_id, series_name, release_name in eco_series_deduped:
         try:
             logging.info(f"Fetching {series_name} ({fred_series_id}) vintages via ALFRED...")
             df_eco = fetch_eco_from_fred(

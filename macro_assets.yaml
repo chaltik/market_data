@@ -1,44 +1,109 @@
 equities:
-  # Broad Equities
+  # ── US Equity: Broad ──────────────────────────────────────────────────────
   - SPY   # S&P 500
-  - QQQ   # Nasdaq
-  - IWM   # Russell 2000
+  - QQQ   # Nasdaq 100
+  - IWM   # Russell 2000 Small Cap
+  - IWD   # Russell 1000 Value
+  - IWF   # Russell 1000 Growth
+  - IJH   # S&P 400 Mid Cap
+  - UPRO
+  - USMV
+  - MTUM
+  - QUAL
+  - DGRO
+  - EPS
+  - VLUE
+  - SIZE
 
-  # Yield Curve
-  - TLT   # 20Y Bonds
-  - IEF   # 7-10Y Bonds
-  - SHY   # 1-3Y Bonds
+  # ── US Equity: Sectors ───────────────────────────────────────────────────
+  - XLK   # Technology
+  - XLF   # Financials
+  - XLE   # Energy
+  - XLV   # Healthcare
+  - XLY   # Consumer Discretionary
+  - XLP   # Consumer Staples
+  - XLI   # Industrials
+  - XLU   # Utilities
+  - XLB   # Materials
+  - XLC   # Communications (2018)
+  - KRE   # Regional Banks (rate-sensitive)
+  - XHB   # Homebuilders (housing/rate cycle)
+  - XOP   # Oil & Gas E&P (pure oil price vs integrated XLE)
+  - SMH   # Semiconductors
+  - GDX   # Gold Miners (leveraged precious metals)
 
-  # Commodities
-  - GLD   # Gold
-  - USO   # Oil
-  - SLV   # Silver
+  # ── US Equity: Real Assets ────────────────────────────────────────────────
+  - VNQ   # REITs Broad
+  - XLRE  # Real Estate Sector (2015)
+  - REM   # Mortgage REITs
 
-  # Inflation Hedges
-  - TIP   # TIPS Bonds
+  # ── International Equity ─────────────────────────────────────────────────
+  - EFA   # MSCI EAFE Developed ex-US
+  - EEM   # MSCI Emerging Markets
+  - VGK   # Europe
+  - EWJ   # Japan
+  - EWZ   # Brazil
+  - FXI   # China Large Cap
+
+  # ── US Fixed Income: Duration ─────────────────────────────────────────────
+  - TBT
+  - TLT   # 20Y+ Treasury
+  - IEF   # 7-10Y Treasury
+  - IEI   # 3-7Y Treasury
+  - SHY   # 1-3Y Treasury
+
+  # ── US Fixed Income: Credit ───────────────────────────────────────────────
+  - LQD   # IG Corporate
+  - HYG   # High Yield
+  - EMB   # EM USD Sovereign
+  - MBB   # Agency MBS
+  - AGG   # US Aggregate Bond
+  - PCI
+  - LMBS
+  - BND
+
+  # ── Inflation-Linked ─────────────────────────────────────────────────────
+  - TIP   # TIPS Broad
   - VTIP  # Short-Term TIPS
 
-  # Financials
-  - XLF   # Banks (rate-sensitive)
+  # ── Commodities: Precious Metals ─────────────────────────────────────────
+  - GLD   # Gold
+  - SLV   # Silver
+  - PPLT  # Platinum (2010)
 
-  # Real Estate
-  - VNQ   # REITs, mortgage sensitivity
-  - XLRE
+  # ── Commodities: Industrial / Base Metals ────────────────────────────────
+  - DBB   # DB Base Metals: copper, aluminum, zinc futures (2007)
+  - CPER  # Copper-specific (2012)
+  - XME   # SPDR Metals & Mining equities (2006)
 
-  # Cyclicals
-  - XLY   # Consumer Discretionary
-  - XLI   # Industrials
-  - XLE   # Energy
-  - XLC   # Communications
+  # ── Commodities: Energy ───────────────────────────────────────────────────
+  - USO   # WTI Crude Oil
+  - UNG   # Natural Gas
 
-  # Defensives
-  - XLU   # Utilities
-  - XLV   # Healthcare
-  - XLB  # Materials
-  - XLP  # Staples
+  # ── Commodities: Agriculture ──────────────────────────────────────────────
+  - DBA   # DB Agriculture: corn, wheat, soy, sugar (2007)
+  - WEAT  # Wheat (2011)
+  - CORN  # Corn (2010)
+  - SOYB  # Soybeans (2012)
+
+  # ── Commodities: Broad Baskets ────────────────────────────────────────────
+  - DBC   # DB Diversified Commodity (2006)
+  - GSG   # GSCI-weighted commodity, heavier energy (2006)
+
+  # ── FX / USD ──────────────────────────────────────────────────────────────
+  - UUP   # USD Bullish (DXY proxy)
+  - HODL  # Bitcoin ETF
+
+  # ── Factor ETFs ───────────────────────────────────────────────────────────────
+  - MTUM  # iShares MSCI USA Momentum Factor (2013)
+  - VLUE  # iShares MSCI USA Value Factor (2013)
+  - QUAL  # iShares MSCI USA Quality Factor (2013)
+  - USMV  # iShares MSCI USA Min Vol Factor (2011)
+  - DBMF  # iMGP DBi Managed Futures / CTA replication (2019)
+  - DBO   # Invesco DB Oil Fund — optimum-yield roll (2007)
+  - DGRO  # iShares Core Dividend Growth ETF (2014)
 
 crypto:
-  # Major crypto
   - BTCUSD
   - ETHUSD
   - SOLUSD

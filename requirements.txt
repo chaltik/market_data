@@ -1,4 +1,5 @@
 pandas
+xlrd
 numpy
 yfinance
 tiingo
@@ -6,3 +7,10 @@ click
 pyyaml
 python-dotenv
 psycopg2
+
+# Dependencies needed for FRED/ALFRED export to parquet/s3
+pyarrow
+s3fs
+fsspec
+fredapi
+requests

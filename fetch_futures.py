@@ -69,7 +69,13 @@ FUTURES_SPECS: dict[str, tuple[str, str, float, str]] = {
     "LE":  ("Live Cattle",             "Agriculture",  400,     "CME"),   # 40000 lb × $0.01
     "HE":  ("Lean Hogs",               "Agriculture",  400,     "CME"),   # 40000 lb × $0.01
     "GF":  ("Feeder Cattle",           "Agriculture",  500,     "CME"),   # 50000 lb × $0.01
-    "LBS": ("Lumber",                  "Agriculture",  110,     "CME"),   # 110000 bd-ft / 1000 (price per mbf)
+    "LBR": ("Lumber",                  "Agriculture",  27.5,    "CME"),   # 27500 bd-ft / 1000 (price per mbf)
+    # LBS (the old 110,000 bd-ft contract) was delisted in May 2023 and replaced
+    # by LBR. Left out of FUTURES_SPECS entirely rather than kept as a dead
+    # entry: every incremental run asked Yahoo for LBS=F and got back a
+    # "possibly delisted" error, on a contract that will never print again.
+    # Its historical rows stay in the DB; nothing tries to extend them.
+    "HRC": ("Steel HRC",               "Metals",       20,      "CME"),   # Midwest US HRC; started 2008 on CME as "HRC=F"
     # Equity Index (standard)
     "ES":  ("E-Mini S&P 500",          "Equity Index", 50,      "CME"),
     "NQ":  ("E-Mini Nasdaq-100",       "Equity Index", 20,      "CME"),
