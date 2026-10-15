@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/home/captain/.pyenv/bin:/home/captain/.pyenv/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+CRON_TZ=America/Los_Angeles
+
+# Incrementally refresh the target ETF universe at 18:00 Pacific local time.
+0 18 * * * /home/captain/projects/market_data/commodity_etf_daily_update.sh >> /home/captain/projects/market_data/logs/commodity_etf_daily.log 2>&1

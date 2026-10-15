@@ -18,3 +18,4 @@ beautifulsoup4
 lxml
 python-dateutil
 tenacity
+pandas_market_calendars

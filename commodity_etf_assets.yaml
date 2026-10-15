@@ -1,0 +1,24 @@
+# Target universe for the commodity, energy, agriculture, Treasury and
+# bitcoin ETFs maintained by commodity_etf_daily_update.sh.
+equities:
+  - GLD
+  - SLV
+  - CPER
+  - PPLT
+  - PALL
+  - USO
+  - BNO
+  - UGA
+  - UNG
+  - CORN
+  - WEAT
+  - SOYB
+  - CANE
+  - SHY
+  - IEI
+  - IEF
+  - TLH
+  - TLT
+  - EDV
+  - BNDX
+  - IBIT

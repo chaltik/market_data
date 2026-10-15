@@ -946,11 +946,10 @@ def main(assets_file, eco_only, assets_only, eco_series_filter):
             save_crypto_prices(df)
             logging.info(f"Stored {symbol} crypto data.")
 
-    # VIX / Treasury CMT / GSCPI: market and rate data, not FRED economic
-    # releases. --eco-only skips the whole block, not just its log lines --
-    # gating the logging alone would leave the work running silently, which
-    # is how a 'skip' flag ends up doing nothing while appearing to work.
-    if not eco_only:
+    # VIX / Treasury CMT / GSCPI are outside an asset-only refresh. Both
+    # flags must skip the work, not just its log lines, so a targeted price
+    # update cannot fail on an unrelated data source.
+    if not eco_only and not assets_only:
         logging.info("🔹 Updating VIX...")
         vix_latest = pd.to_datetime(get_latest_date("market_indices.vix"))
         vix_series = fetch_vix_from_FRED()
