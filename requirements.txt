@@ -14,3 +14,7 @@ s3fs
 fsspec
 fredapi
 requests
+beautifulsoup4
+lxml
+python-dateutil
+tenacity

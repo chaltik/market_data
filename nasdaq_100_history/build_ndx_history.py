@@ -3,7 +3,7 @@
 # =============================================
 """
 Usage:
-  python build_ndx_history.py [--seed-source nasdaq|qqq] [--start-year 2008]
+  python -m nasdaq_100_history.build_ndx_history [--seed-source nasdaq|qqq] [--start-year 2008]
 
 Notes:
 - Requires: requests, pandas, beautifulsoup4, lxml, python-dateutil, tenacity
@@ -32,6 +32,10 @@ from db_utils import get_connection
 from db_config import config as conn_params
 
 WIKI_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
+WIKI_CURRENT_URL = "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies"
+# The live article no longer contains the component-change table. Keep using
+# the immutable revision that contains the historical table.
+WIKI_HISTORY_URL = "https://en.wikipedia.org/w/index.php?oldid=1363358968"
 NASDAQ_COMPANIES_URL = "https://www.nasdaq.com/solutions/global-indexes/nasdaq-100/companies"
 QQQ_HOLDINGS_CSV = (
     "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?action=download&audienceType=Investor&ticker=QQQ"
@@ -50,8 +54,6 @@ class Source:
     published_date: Optional[date]
     raw_text: Optional[str]
 
-@dataclass
-# dataclass (add sector at the end with a default)
 @dataclass
 class ChangeEvent:
     action: str
@@ -205,7 +207,7 @@ def parse_pr_body_for_changes(url: str, html: str) -> Tuple[List[str], List[str]
     return _dedupe(added), _dedupe(removed), eff_date, eff_session
 
 def fetch_wikipedia_yearly_changes(start_year: int = 2008) -> List[ChangeEvent]:
-    r = _get(WIKI_URL)
+    r = _get(WIKI_HISTORY_URL)
     tables = pd.read_html(StringIO(r.text))  # use pandas to parse all tables
 
     events: List[ChangeEvent] = []
@@ -241,7 +243,7 @@ def fetch_wikipedia_yearly_changes(start_year: int = 2008) -> List[ChangeEvent]:
     return events
 
 def extract_pr_urls_from_wikipedia() -> List[str]:
-    r = _get(WIKI_URL)
+    r = _get(WIKI_HISTORY_URL)
     soup = BeautifulSoup(r.text, "lxml")
     urls = []
     for a in soup.find_all("a", href=True):
@@ -259,10 +261,10 @@ def extract_pr_urls_from_wikipedia() -> List[str]:
             out.append(u)
     return out
 
-def fetch_current_ndx_constituents(seed_source: str = "nasdaq"):
+def fetch_current_ndx_constituents(seed_source: str = "qqq"):
     """
     Returns: (pairs, src_title, src_url, src_type)
-    pairs is List[Tuple[symbol, company_name]]
+    pairs is List[Tuple[symbol, company_name, sector]]
     - seed_source='nasdaq' -> try Nasdaq, then Wikipedia, then QQQ
     - seed_source='qqq'    -> QQQ only
     """
@@ -279,34 +281,34 @@ def fetch_current_ndx_constituents(seed_source: str = "nasdaq"):
                         sym = tds[0].strip().upper()
                         name = tds[1].strip()
                         if re.fullmatch(r"[A-Z\.]{1,6}", sym):
-                            out.append((sym, name))
+                            out.append((sym, name, None))
         logging.info(f'fetched {len(out)} data pairs from nasdaq url')
         return out
 
     def _from_wikipedia():
-        r = _get(WIKI_URL)
+        r = _get(WIKI_CURRENT_URL)
         tables = pd.read_html(StringIO(r.text))  # avoids FutureWarning
         for df in tables:
             cols = [str(c).lower() for c in df.columns]
             if any("ticker" in c for c in cols) and any("company" in c for c in cols):
                 c_sym  = next(c for c in df.columns if "ticker"  in str(c).lower())
                 c_name = next(c for c in df.columns if "company" in str(c).lower())
-                c_sector = next(c for c in df.columns if "sector" in str(c).lower())
+                c_sector = next((c for c in df.columns if "sector" in str(c).lower()), None)
                 out = []
                 for _, row in df.iterrows():
                     sym = str(row[c_sym]).strip().upper()
                     name = str(row[c_name]).strip()
-                    sector = str(row[c_sector]).strip()
+                    sector = str(row[c_sector]).strip() if c_sector is not None else None
                     if re.fullmatch(r"[A-Z\.]{1,6}", sym):
                         out.append((sym, name, sector))
                 if out:
-                    logging.info(f'fetched {len(out)} data tuples from {WIKI_URL}')
+                    logging.info(f'fetched {len(out)} data tuples from {WIKI_CURRENT_URL}')
                     return out
-        logging.info(f'didnt find any table at {WIKI_URL}')
+        logging.info(f'didnt find any table at {WIKI_CURRENT_URL}')
         return []
 
     def _from_qqq():
-        df = pd.read_csv(QQQ_HOLDINGS_CSV)
+        df = pd.read_csv(StringIO(_get(QQQ_HOLDINGS_CSV).text))
         c_sym  = next((c for c in df.columns if str(c).lower() in ("holding ticker","ticker","ticker symbol","symbol")), None)
         c_name = next((c for c in df.columns if "name" in str(c).lower()), None)
         c_sector = next((c for c in df.columns if "sector" in str(c).lower()), None )
@@ -320,32 +322,30 @@ def fetch_current_ndx_constituents(seed_source: str = "nasdaq"):
         logging.info(f'fetched {len(out)} data tuples from {QQQ_HOLDINGS_CSV}')
         return out
 
-    try:
-        data = _from_qqq()
-        if data and len(data) > 0:
-            return data, "Invesco QQQ holdings", QQQ_HOLDINGS_CSV, "ETF"
-        logging.warning("QQQ csv file parsing didn't result in any holdings, trying Wiki next")
-    except Exception as e:
-        logging.warning("QQQ csv file failed (%s); falling back to Wikipedia", e)
-    try:
-        data = _from_wikipedia()
-        if data and len(data) > 0:
-            return data, "Wikipedia current NDX table", WIKI_URL, "WIKIPEDIA"
-        logging.warning("Wikipedia current table empty; falling back to QQQ holdings")
-    except Exception as e:
-        logging.warning("Wikipedia current table failed (%s); giving up, e")
-        raise
+    if seed_source == "qqq":
+        sources = [
+            (_from_qqq, "Invesco QQQ holdings", QQQ_HOLDINGS_CSV, "ETF"),
+            (_from_wikipedia, "Wikipedia current NDX table", WIKI_CURRENT_URL, "WIKIPEDIA"),
+        ]
+    elif seed_source == "nasdaq":
+        sources = [
+            (_from_nasdaq, "Nasdaq-100 Companies", NASDAQ_COMPANIES_URL, "MANUAL"),
+            (_from_wikipedia, "Wikipedia current NDX table", WIKI_URL, "WIKIPEDIA"),
+            (_from_qqq, "Invesco QQQ holdings", QQQ_HOLDINGS_CSV, "ETF"),
+        ]
+    else:
+        raise ValueError(f"Unsupported seed source: {seed_source}")
 
+    for fetch, title, url, source_type in sources:
+        try:
+            data = fetch()
+            if data:
+                return data, title, url, source_type
+            logging.warning("%s returned no holdings", title)
+        except Exception as e:
+            logging.warning("%s failed (%s)", title, e)
 
-
-    # # default: nasdaq cascade
-    # try:
-    #     pairs = _from_nasdaq()
-    #     if pairs:
-    #         return pairs, "Nasdaq-100 Companies", NASDAQ_COMPANIES_URL, "MANUAL"
-    #     logging.warning("Nasdaq companies page empty; trying Wikipedia current table")
-    # except Exception as e:
-    #     logging.warning("Nasdaq companies page failed (%s); trying Wikipedia", e)
+    raise RuntimeError(f"Unable to fetch current NDX constituents using seed source {seed_source!r}")
 
 
 
@@ -416,6 +416,7 @@ def compute_intervals_from_events(
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--seed-source", choices=["nasdaq", "qqq"], default="qqq")
     ap.add_argument("--start-year", type=int, default=2008)
     args = ap.parse_args()
 
@@ -434,7 +435,7 @@ def main():
             raise LookupError(f"Index code {index_code} not found")
         index_id = row["index_id"]      
 
-        data, src_title, src_url, src_type = fetch_current_ndx_constituents()
+        data, src_title, src_url, src_type = fetch_current_ndx_constituents(args.seed_source)
 
 
     as_of = date.today()
@@ -462,7 +463,7 @@ def main():
     logging.info("Wikipedia parsed events: %d", len(wiki_events))
     # --- INSERT WIKIPEDIA EVENTS FIRST ---
     with get_connection(params) as (conn, cur):
-        wiki_src_id = upsert_source(cur, Source("WIKIPEDIA", "Nasdaq-100 Wikipedia", WIKI_URL, None, None))
+        wiki_src_id = upsert_source(cur, Source("WIKIPEDIA", "Nasdaq-100 Wikipedia component changes", WIKI_HISTORY_URL, None, None))
         inserted = 0
         for ev in wiki_events:
             cid = insert_change_event(cur, index_id, "NDX", ev, wiki_src_id)
@@ -498,7 +499,7 @@ def main():
             change_id, action, symbol, eff_date = r
             if symbol:
                 ev_list.append((change_id, action, symbol, eff_date))
-        intervals = compute_intervals_from_events(seed_symbols, ev_list)
+    intervals = compute_intervals_from_events(seed_symbols, ev_list)
 
     # Store intervals
     # build a lookup from the seed we just loaded

@@ -121,7 +121,7 @@ All three main tables include **`sector`**. Constituents have a unique constrain
 
 ### One-time (or ad-hoc) build from Wikipedia + QQQ
 ```bash
-PYTHONPATH=. python build_ndx_history.py
+PYTHONPATH=. python -m nasdaq_100_history.build_ndx_history
 ```
 - Ingests Wikipedia changes → `index_changes_raw`
 - Seeds from QQQ → `seed_snapshots`
@@ -129,25 +129,25 @@ PYTHONPATH=. python build_ndx_history.py
 
 ### Daily updater from QQQ (safe diff)
 ```bash
-PYTHONPATH=. python update_ndx_history.py
+PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history
 ```
 Optional args:
 ```bash
 # Index code (default: NDX)
-PYTHONPATH=. python update_ndx_history.py --code NDX
+PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history --code NDX
 
 # Backfill or force a specific snapshot date
-PYTHONPATH=. python update_ndx_history.py --asof 2025-09-08
+PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history --asof 2025-09-08
 ```
 
 **Cron (daily):**
 ```cron
-5 0 * * * cd /path/to/market_data && PYTHONPATH=. python update_ndx_history.py >> logs/ndx_update.log 2>&1
+5 0 * * * cd /path/to/market_data && PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history >> logs/ndx_update.log 2>&1
 ```
 
 ### Convenience daily update script ###
 
-`ndx_daily_update.sh` will first run the script that updates the index constituents from QQQ holdings. After that it will generate a yaml file that will contain all relevant symbols and will run data retrieval operation for those. Now you have daily values of QQQ holdings together with up-to-date prices.
+`nasdaq_100_history/ndx_daily_update.sh` will first update the index constituents from QQQ holdings. It then generates a YAML file containing all relevant symbols and runs the data retrieval operation for them.
 
 ### 🔍 SQL Helpers
 
@@ -168,6 +168,4 @@ SELECT symbol, sector, company_name
 FROM market_indices.constituents_asof('NDX')
 ORDER BY symbol;
 ```
-
-
 

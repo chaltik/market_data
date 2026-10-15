@@ -3,7 +3,7 @@
 # =============================================
 """
 Usage:
-  python update_ndx_history.py [--code NDX] [--asof YYYY-MM-DD]
+  python -m nasdaq_100_history.update_ndx_history [--code NDX] [--asof YYYY-MM-DD]
 
 Behavior:
 - Pulls QQQ holdings via simple pandas.read_csv(URL).
@@ -23,13 +23,14 @@ import argparse
 import logging
 import re
 from datetime import date, timedelta
+from io import StringIO
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from db_utils import get_connection
 from db_config import config as conn_params
-from build_ndx_history import Source, upsert_source
+from .build_ndx_history import Source, _get, fetch_current_ndx_constituents, upsert_source
 
 # -------------------------------
 # Config
@@ -94,7 +95,12 @@ def fetch_qqq_triples() -> List[Tuple[str, Optional[str], Optional[str]]]:
     Simple fetch like your REPL:
     df = pd.read_csv(URL) -> normalize to [(symbol, name, sector)].
     """
-    df = pd.read_csv(QQQ_HOLDINGS_CSV, dtype=str)
+    try:
+        df = pd.read_csv(StringIO(_get(QQQ_HOLDINGS_CSV).text), dtype=str)
+    except Exception as exc:
+        logging.warning("QQQ holdings download unavailable (%s); falling back to Wikipedia", exc)
+        triples, _, _, _ = fetch_current_ndx_constituents("qqq")
+        return triples
 
     c_sym = _choose_symbol_col(df)
     c_name = _pick_col(df, ("name", "holding name", "security name", "company", "company name")) or "Name"
@@ -123,8 +129,13 @@ def fetch_qqq_triples() -> List[Tuple[str, Optional[str], Optional[str]]]:
             seen.add(s)
             out.append((s, n, c))
 
-    logging.info("Fetched %d holdings from QQQ CSV", len(out))
-    return out
+    if len(out) >= MIN_QQQ_ROWS:
+        logging.info("Fetched %d holdings from QQQ CSV", len(out))
+        return out
+
+    logging.warning("QQQ CSV yielded too few holdings (%d); falling back to Wikipedia", len(out))
+    triples, _, _, _ = fetch_current_ndx_constituents("qqq")
+    return triples
 
 
 def main():
@@ -171,6 +182,21 @@ def main():
         )
         prev_row = cur.fetchone()
         prev_asof = prev_row["prev_asof"] if prev_row else None
+
+    # Load and validate the prior snapshot before inserting the new one. This
+    # keeps a rejected update from becoming the next baseline.
+    prev_syms = set()
+    if prev_asof:
+        with get_connection(params) as (conn, cur):
+            cur.execute(
+                "SELECT symbol FROM market_indices.seed_snapshots WHERE index_id = %(idx)s AND as_of_date = %(d)s",
+                {"idx": index_id, "d": prev_asof},
+            )
+            prev_syms = {r["symbol"] for r in cur.fetchall()}
+
+        if prev_syms and len(curr_syms) < int(0.6 * len(prev_syms)):
+            logging.error("Aborting update: size dropped >40%% (%d -> %d).", len(prev_syms), len(curr_syms))
+            return
 
     # Insert today's seed snapshot
     with get_connection(params) as (conn, cur):
@@ -231,18 +257,6 @@ def main():
         return
 
     # Diff vs previous snapshot
-    with get_connection(params) as (conn, cur):
-        cur.execute(
-            "SELECT symbol FROM market_indices.seed_snapshots WHERE index_id = %(idx)s AND as_of_date = %(d)s",
-            {"idx": index_id, "d": prev_asof},
-        )
-        prev_syms = {r["symbol"] for r in cur.fetchall()}
-
-    # basic safety
-    if prev_syms and len(curr_syms) < int(0.6 * len(prev_syms)):
-        logging.error("Aborting update: size dropped >40%% (%d -> %d).", len(prev_syms), len(curr_syms))
-        return
-
     added_syms = curr_syms - prev_syms
     removed_syms = prev_syms - curr_syms
     continued = curr_syms & prev_syms

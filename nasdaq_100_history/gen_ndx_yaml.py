@@ -6,8 +6,8 @@
 #   --mode asof  -> constituents as of a date (uses constituents_asof)
 #
 # Examples:
-#   python gen_ndx_yaml.py --mode all --output ndx_all.yaml
-#   python gen_ndx_yaml.py --mode asof --asof 2025-09-08 --stdout
+#   python -m nasdaq_100_history.gen_ndx_yaml --mode all --output ndx_all.yaml
+#   python -m nasdaq_100_history.gen_ndx_yaml --mode asof --asof 2025-09-08 --stdout
 #
 import argparse
 import re
