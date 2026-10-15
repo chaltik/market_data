@@ -140,14 +140,22 @@ PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history --code NDX
 PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history --asof 2025-09-08
 ```
 
-**Cron (daily):**
+**Cron (daily Nasdaq-100 maintenance):**
 ```cron
 5 0 * * * cd /path/to/market_data && PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history >> logs/ndx_update.log 2>&1
 ```
 
+The repository's scheduled market-data loader is `commodity_etf_daily.cron`. Its
+18:00 Pacific job now refreshes the Nasdaq-100 universe from QQQ, generates the
+current constituent list, pulls Nasdaq-100 prices, and then refreshes the
+commodity/ETF universe. It uses the pyenv `market_data` environment and runs
+both price loads with `--assets-only`.
+
 ### Convenience daily update script ###
 
-`nasdaq_100_history/ndx_daily_update.sh` will first update the index constituents from QQQ holdings. It then generates a YAML file containing all relevant symbols and runs the data retrieval operation for them.
+`nasdaq_100_history/ndx_daily_update.sh` performs the Nasdaq-100 portion alone:
+it updates the index constituents from QQQ holdings, generates a YAML file for
+the current members, and runs the incremental price pull.
 
 ### 🔍 SQL Helpers
 
