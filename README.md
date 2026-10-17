@@ -171,9 +171,11 @@ PYTHONPATH=. python -m sp500_history.gen_sp500_yaml --mode asof --asof 2026-10-1
 
 `sp500_history/sp500_daily_update.sh` applies the update, creates an as-of YAML,
 and runs the existing price retrieval job. The repository's scheduled loader,
-`commodity_etf_daily.cron`, now runs the Nasdaq-100 update, the S&P 500 update,
+`market_data_daily.cron`, now runs the Nasdaq-100 update, the S&P 500 update,
 and the commodity/ETF update together at 18:00 Pacific. Both index price pulls
-write through `data_retrieval.py` into `price_data.equities_us_daily`.
+write through `data_retrieval.py` into `price_data.equities_us_daily`. The
+scheduled price refresh uses yfinance explicitly, so it does not consume the
+Tiingo Starter allowance (50 requests/hour, 1,000/day, 500 unique symbols/month).
 
 The S&P-only script can still be run manually or scheduled independently:
 

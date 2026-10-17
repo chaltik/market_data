@@ -23,7 +23,8 @@ asof="$(TZ=America/Los_Angeles date +%F)"
   --code NDX --mode asof --asof "$asof" --output "$ndx_tmpfile"
 "${PYTHON[@]}" "$ROOT/data_retrieval.py" \
   --assets_file "$ndx_tmpfile" \
-  --assets-only
+  --assets-only \
+  --price-provider yfinance
 
 # Refresh the approximate S&P 500 universe from State Street's SPY holdings,
 # then pull prices into the same price_data.equities_us_daily table.
@@ -34,10 +35,13 @@ trap 'rm -f "$ndx_tmpfile" "$sp500_tmpfile"' EXIT
   --code SP500 --mode asof --asof "$asof" --output "$sp500_tmpfile"
 "${PYTHON[@]}" "$ROOT/data_retrieval.py" \
   --assets_file "$sp500_tmpfile" \
-  --assets-only
+  --assets-only \
+  --price-provider yfinance
 
-# data_retrieval.py loads .env itself and uses the existing Tiingo-first,
-# yfinance-fallback provider path and price_data.equities_us storage tables.
+# data_retrieval.py loads .env itself and writes to the existing
+# price_data.equities_us storage tables. yfinance is explicit here to keep
+# the scheduled job within Tiingo's Starter limits.
 "${PYTHON[@]}" "$ROOT/data_retrieval.py" \
   --assets_file "$ROOT/commodity_etf_assets.yaml" \
-  --assets-only
+  --assets-only \
+  --price-provider yfinance

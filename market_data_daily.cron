@@ -5,4 +5,4 @@ CRON_TZ=America/Los_Angeles
 
 # Incrementally refresh the Nasdaq-100, approximate S&P 500, and target ETF
 # universes at 18:00 Pacific local time.
-0 18 * * * /home/captain/projects/market_data/commodity_etf_daily_update.sh >> /home/captain/projects/market_data/logs/commodity_etf_daily.log 2>&1
+0 18 * * * /home/captain/projects/market_data/market_data_daily_update.sh >> /home/captain/projects/market_data/logs/market_data_daily.log 2>&1
