@@ -175,7 +175,8 @@ and runs the existing price retrieval job. The repository's scheduled loader,
 and the commodity/ETF update together at 18:00 Pacific. Both index price pulls
 write through `data_retrieval.py` into `price_data.equities_us_daily`. The
 scheduled price refresh uses yfinance explicitly, so it does not consume the
-Tiingo Starter allowance (50 requests/hour, 1,000/day, 500 unique symbols/month).
+Tiingo Starter allowance (50 requests/hour, 1,000/day, 500 unique symbols/month),
+and deduplicates overlapping symbols before the single retrieval pass.
 
 The S&P-only script can still be run manually or scheduled independently:
 

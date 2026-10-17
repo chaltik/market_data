@@ -938,7 +938,9 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider):
     logging.info(f"🔹 Loading assets from {assets_file}...")
     with open(assets_file, "r") as f:
         assets = yaml.load(f, Loader=yaml.BaseLoader)  # all scalars as strings
-    equity_symbols = list(map(str, assets.get("equities", [])))
+    # A symbol is one provider request per run. Preserve input order while
+    # preventing duplicate YAML entries from causing duplicate requests.
+    equity_symbols = list(dict.fromkeys(map(str, assets.get("equities", []))))
     
     crypto_symbols = assets.get("crypto", [])
     
