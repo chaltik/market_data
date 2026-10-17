@@ -115,9 +115,19 @@ CREATE OR REPLACE VIEW market_indices.v_index_constituents_pti AS
 SELECT index_id, symbol, company_name, sector, start_date, end_date
 FROM market_indices.index_constituents;
 
--- Bootstrap NDX row
+-- Bootstrap supported index rows
 INSERT INTO market_indices.indices(code, name, provider, methodology_url)
 VALUES ('NDX','Nasdaq-100','Nasdaq','https://indexes.nasdaq.com/docs/Methodology_NDX.pdf')
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO market_indices.indices(code, name, provider, methodology_url, notes)
+VALUES (
+  'SP500',
+  'Approximate S&P 500 large-cap universe',
+  'State Street / public historical reconstruction',
+  'https://www.ssga.com/us/en/individual/etfs/state-street-spdr-sp-500-etf-trust-spy',
+  'Approximately 500 names; historical membership comes from point-in-time snapshots and current membership from SPY holdings.'
+)
 ON CONFLICT (code) DO NOTHING;
 
 COMMIT;

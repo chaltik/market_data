@@ -149,6 +149,40 @@ PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history --asof 2025-09-08
 
 `nasdaq_100_history/ndx_daily_update.sh` will first update the index constituents from QQQ holdings. It then generates a YAML file containing all relevant symbols and runs the data retrieval operation for them.
 
+## Approximate S&P 500 large-cap universe
+
+`sp500_history/` maintains `SP500`, an approximately 500-name US large-cap universe.
+It is intentionally not a claim of exact S&P 500 membership or weights.
+
+- Historical backfill: the public point-in-time `date,tickers` snapshots in
+  [thuningxu/sp500nq100](https://github.com/thuningxu/sp500nq100), beginning 1996-01-02.
+  Every supplied snapshot is retained in `market_indices.seed_snapshots`; transitions
+  become point-in-time intervals, so removed names and ticker changes remain available.
+- Daily maintenance: State Street's official [SPY daily holdings](https://www.ssga.com/us/en/individual/etfs/state-street-spdr-sp-500-etf-trust-spy)
+  XLSX. The parser accepts the workbook's metadata rows and validates a 450–550-name universe.
+
+Run the initial backfill, then the daily update:
+
+```bash
+PYTHONPATH=. python -m sp500_history.build_sp500_history
+PYTHONPATH=. python -m sp500_history.update_sp500_history
+PYTHONPATH=. python -m sp500_history.gen_sp500_yaml --mode asof --asof 2026-10-16 --output /tmp/sp500.yaml
+```
+
+`sp500_history/sp500_daily_update.sh` applies the update, creates an as-of YAML,
+and runs the existing price retrieval job. A cron entry can invoke that script
+using the same pattern as the other daily jobs, for example:
+
+```cron
+5 0 * * * cd /path/to/market_data && PYTHONPATH=. ./sp500_history/sp500_daily_update.sh >> logs/sp500_update.log 2>&1
+```
+
+Query historical membership with the shared helper:
+
+```sql
+SELECT * FROM market_indices.constituents_asof('SP500', DATE '2005-01-03');
+```
+
 ### 🔍 SQL Helpers
 
 The helper function `market_indices.constituents_asof(code text, p_asof date)` is defined in `create_market_indices_tables.sql`. Below are usage examples.
