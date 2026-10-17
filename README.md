@@ -170,8 +170,12 @@ PYTHONPATH=. python -m sp500_history.gen_sp500_yaml --mode asof --asof 2026-10-1
 ```
 
 `sp500_history/sp500_daily_update.sh` applies the update, creates an as-of YAML,
-and runs the existing price retrieval job. A cron entry can invoke that script
-using the same pattern as the other daily jobs, for example:
+and runs the existing price retrieval job. The repository's scheduled loader,
+`commodity_etf_daily.cron`, now runs the Nasdaq-100 update, the S&P 500 update,
+and the commodity/ETF update together at 18:00 Pacific. Both index price pulls
+write through `data_retrieval.py` into `price_data.equities_us_daily`.
+
+The S&P-only script can still be run manually or scheduled independently:
 
 ```cron
 5 0 * * * cd /path/to/market_data && PYTHONPATH=. ./sp500_history/sp500_daily_update.sh >> logs/sp500_update.log 2>&1

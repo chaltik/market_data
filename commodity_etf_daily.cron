@@ -3,5 +3,6 @@ PATH=/home/captain/.pyenv/bin:/home/captain/.pyenv/shims:/usr/local/sbin:/usr/lo
 MAILTO=""
 CRON_TZ=America/Los_Angeles
 
-# Incrementally refresh the target ETF universe at 18:00 Pacific local time.
+# Incrementally refresh the Nasdaq-100, approximate S&P 500, and target ETF
+# universes at 18:00 Pacific local time.
 0 18 * * * /home/captain/projects/market_data/commodity_etf_daily_update.sh >> /home/captain/projects/market_data/logs/commodity_etf_daily.log 2>&1
