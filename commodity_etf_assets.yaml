@@ -1,5 +1,5 @@
 # Target universe for the commodity, energy, agriculture, Treasury and
-# bitcoin ETFs maintained by commodity_etf_daily_update.sh.
+# bitcoin ETFs maintained by market_data_daily_update.sh.
 equities:
   - GLD
   - SLV

@@ -147,6 +147,21 @@ def save_equity_metadata(symbol: str):
         }
         _upsert_equity_metadata_row(payload)
         return payload
+
+def save_yfinance_metadata(symbol: str):
+    """Save lightweight metadata without consuming a Tiingo request."""
+    name, exch = _safe_yf_name_exchange(symbol)
+    payload = {
+        "symbol": symbol,
+        "name": name,
+        "exchange": exch,
+        "currency": None,
+        "provider": "yfinance",
+        "status": "ok" if name or exch else "metadata_error",
+        "updated_at": utcnow(),
+    }
+    _upsert_equity_metadata_row(payload)
+    return payload
     
 def _upsert_equity_metadata_row(metadata):
     if metadata:
@@ -159,7 +174,7 @@ def _upsert_equity_metadata_row(metadata):
                 metadata.get("symbol"),
                 metadata.get("name"),
                 "stock",
-                metadata.get("exchangeCode"),
+                metadata.get("exchangeCode") or metadata.get("exchange"),
                 metadata.get("currency"),
                 metadata.get("sector"),
                 metadata.get("industry")
@@ -240,6 +255,8 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None):
     # Path A: Tiingo first
     # ---------------------------
     try:
+        if os.environ.get("MARKET_DATA_PRICE_PROVIDER", "tiingo") == "yfinance":
+            raise ValueError("yfinance selected; skipping Tiingo")
         tiingo_kwargs = {"frequency": "daily", "startDate": start_date}
         if end_date is not None:
             tiingo_kwargs["endDate"] = end_date
@@ -892,6 +909,9 @@ def save_eco_from_fred_to_db(
                    "economic series entirely. The eco block issues an ALFRED "
                    "vintage request per series and dominates the runtime, so "
                    "pulling a handful of new tickers does not need it.")
+@click.option('--price-provider', type=click.Choice(['tiingo', 'yfinance']),
+              default='tiingo', show_default=True,
+              help="Provider for equity prices and missing equity metadata.")
 # Explicit parameter name: `eco_series` is ALREADY a local inside main() -- the
 # list of (id, name, release) tuples built from the YAML -- so letting click
 # derive that name from --eco-series shadowed the CLI value with a list, and the
@@ -899,7 +919,7 @@ def save_eco_from_fred_to_db(
 @click.option('--eco-series', 'eco_series_filter', default=None,
               help="Comma-separated fred_series_id list to refresh, filtered "
                    "from macro_series.yaml. Default: every series in the file.")
-def main(assets_file, eco_only, assets_only, eco_series_filter):
+def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider):
     """Refresh market and macro data into coredata.
 
     The full run touches every asset in macro_assets.yaml plus all ~84 FRED
@@ -913,10 +933,14 @@ def main(assets_file, eco_only, assets_only, eco_series_filter):
         raise click.UsageError("--eco-only and --assets-only are mutually "
                                "exclusive; passing both would skip everything.")
 
+    os.environ["MARKET_DATA_PRICE_PROVIDER"] = price_provider
+
     logging.info(f"🔹 Loading assets from {assets_file}...")
     with open(assets_file, "r") as f:
         assets = yaml.load(f, Loader=yaml.BaseLoader)  # all scalars as strings
-    equity_symbols = list(map(str, assets.get("equities", [])))
+    # A symbol is one provider request per run. Preserve input order while
+    # preventing duplicate YAML entries from causing duplicate requests.
+    equity_symbols = list(dict.fromkeys(map(str, assets.get("equities", []))))
     
     crypto_symbols = assets.get("crypto", [])
     
@@ -927,7 +951,10 @@ def main(assets_file, eco_only, assets_only, eco_series_filter):
         logging.info(f'Do we have {symbol} metadata?')
         if not check_metadata_exists(symbol, "equities_us"):
             logging.info(f"Fetching metadata for {symbol}...")
-            save_equity_metadata(symbol)
+            if price_provider == "yfinance":
+                save_yfinance_metadata(symbol)
+            else:
+                save_equity_metadata(symbol)
         logging.info(f"Fetching prices for {symbol}...")
         df = fetch_equity_prices(symbol)
         if not df.empty:
