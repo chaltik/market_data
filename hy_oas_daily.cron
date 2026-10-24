@@ -1,0 +1,4 @@
+# Append this job to the existing market-data crontab. The system cron
+# already sets CRON_TZ=America/Los_Angeles and runs the price loader at 18:00.
+# Refresh before the 11:30 ET strategy decision (08:30 Pacific).
+0 7 * * * /home/captain/projects/market_data/hy_oas_daily_update.sh >> /home/captain/projects/market_data/logs/hy_oas_daily.log 2>&1

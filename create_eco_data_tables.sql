@@ -16,9 +16,17 @@ CREATE TABLE IF NOT EXISTS eco.release_schedule (
     release_name TEXT,
     series_name TEXT,
     release_date DATE NOT NULL,
+    release_date_source TEXT,
+    release_date_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    first_fetched_at TIMESTAMPTZ,
     reference_date DATE NOT NULL,
     PRIMARY KEY (release_name, reference_date)
 );
+
+-- Existing databases may predate the provenance columns.
+ALTER TABLE eco.release_schedule ADD COLUMN IF NOT EXISTS release_date_source TEXT;
+ALTER TABLE eco.release_schedule ADD COLUMN IF NOT EXISTS release_date_verified BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE eco.release_schedule ADD COLUMN IF NOT EXISTS first_fetched_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS eco.release_data (
     release_id BIGINT NOT NULL,
