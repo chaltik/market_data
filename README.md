@@ -218,3 +218,49 @@ FROM market_indices.constituents_asof('NDX')
 ORDER BY symbol;
 ```
 
+### FRED high-yield OAS
+
+`hy_oas.py` stores FRED series `BAMLH0A0HYM2` in the existing
+`eco.release_content`, `eco.release_schedule`, and `eco.release_data` tables.
+Run the historical import once, then append the line in `hy_oas_daily.cron`
+to the existing user crontab for a 07:00 Pacific daily refresh. The script
+uses the same `.env`, `database.ini`, and pyenv `market_data` environment as
+the other loaders.
+
+```bash
+PYENV_VERSION=market_data pyenv exec python hy_oas.py backfill \
+  --archive /home/captain/projects/strader/etf_factors/data/hy_oas_fred_archive.csv
+PYENV_VERSION=market_data pyenv exec python hy_oas.py refresh
+```
+
+The archive lacks publication timestamps. For archive rows, `release_date`
+means the next NYSE session after `reference_date` and
+`release_date_source='inferred_next_nyse_session_from_archive'`. For FRED
+rows with ALFRED vintages, availability is the next NYSE session after the
+first vintage date (and no earlier than the next session after the observation).
+If vintages are unavailable, it is no earlier than the next NYSE session after
+the actual fetch time. Recent vintages are also bounded by the first actual
+fetch: a value fetched after 11:30 ET is usable at the next session.
+`first_fetched_at` records that time. These dates are
+conservative estimates, not verified release timestamps. Missing values are
+omitted, and the first published nonmissing value for each observation date
+is retained on reruns to avoid backtest leakage from later revisions.
+
+An 11:30 ET strategy can use the following query with `release_date <=` the
+decision's trade date. Requiring `release_date <` trade date adds another
+session of lag to the archive's already inferred one-session lag.
+
+```sql
+SELECT d.reference_date AS observation_date, d.release_date AS available_on,
+       d.value, s.release_date_source, s.first_fetched_at
+FROM eco.release_data d
+JOIN eco.release_content c USING (release_name, series_name)
+JOIN eco.release_schedule s
+  ON s.release_name = d.release_name
+ AND s.reference_date = d.reference_date
+WHERE c.fred_series_id = 'BAMLH0A0HYM2'
+  AND d.value IS NOT NULL
+  AND d.release_date <= %(trade_date)s
+ORDER BY d.reference_date DESC;
+```
+
