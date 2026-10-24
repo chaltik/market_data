@@ -6,4 +6,4 @@ cd "$ROOT"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYENV_VERSION="market_data"
 
-/home/captain/.pyenv/bin/pyenv exec python "$ROOT/hy_oas.py" refresh
+/home/captain/.pyenv/bin/pyenv exec python "$ROOT/hy_oas.py" refresh "$@"
