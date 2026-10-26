@@ -223,7 +223,7 @@ ORDER BY symbol;
 `hy_oas.py` stores FRED series `BAMLH0A0HYM2` in the existing
 `eco.release_content`, `eco.release_schedule`, and `eco.release_data` tables.
 Run the historical import once, then append the line in `hy_oas_daily.cron`
-to the existing user crontab for a 07:00 Pacific daily refresh. The script
+to the existing user crontab for a 07:30 Pacific daily refresh. The script
 uses the same `.env`, `database.ini`, and pyenv `market_data` environment as
 the other loaders.
 
