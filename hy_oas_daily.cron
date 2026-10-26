@@ -1,0 +1,4 @@
+# Append this job to the existing market-data crontab. The system cron
+# already sets CRON_TZ=America/Los_Angeles and runs the price loader at 18:00.
+# Refresh after the morning FRED release window (07:30 Pacific).
+30 7 * * * /home/captain/projects/market_data/hy_oas_daily_update.sh >> /home/captain/projects/market_data/logs/hy_oas_daily.log 2>&1
