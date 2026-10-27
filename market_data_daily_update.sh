@@ -55,3 +55,7 @@ PY
   --assets_file "$combined_tmpfile" \
   --assets-only \
   --price-provider yfinance
+
+# The broad price pass can receive an older nonempty Yahoo response. Refetch
+# these live-book ETFs and fail the cron if the last completed close is absent.
+"${PYTHON[@]}" "$ROOT/required_etf_daily_check.py"
