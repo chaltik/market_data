@@ -70,15 +70,20 @@ class RequiredEtfCheckTest(unittest.TestCase):
             self.assertFalse(refresh_completed_bar("IVV", close_ts))
         save.assert_not_called()
 
-    def test_uwm_remains_on_yahoo(self):
+    def test_uwm_uses_tiingo_full_history(self):
         close_ts = pd.Timestamp("2026-10-26 20:00Z")
         frame = pd.DataFrame({"ts": [close_ts], "symbol": ["UWM"],
                               "close": [56.0], "adj_close": [56.0]})
         with patch.object(data_retrieval, "fetch_equity_prices", return_value=frame) as fetch, \
-             patch.object(data_retrieval, "save_equity_prices"), \
+             patch.object(data_retrieval, "save_equity_prices_bulk") as save, \
+             patch("required_etf_daily_check.MIN_UWM_HISTORY_ROWS", 1), \
+             patch("required_etf_daily_check.check_history_coverage"), \
              patch("required_etf_daily_check.stored_completed_bar", return_value=True):
             self.assertTrue(refresh_completed_bar("UWM", close_ts))
-        self.assertEqual(fetch.call_args.kwargs["price_provider"], "yfinance")
+        self.assertEqual(fetch.call_args.kwargs["price_provider"], "tiingo")
+        self.assertTrue(fetch.call_args.kwargs["strict_provider"])
+        self.assertEqual(fetch.call_args.kwargs["start_date"], "2000-01-01")
+        save.assert_called_once()
 
     def test_strict_tiingo_does_not_fall_back_to_yahoo(self):
         with patch.object(data_retrieval, "get_latest_ts_for_symbol", return_value=None), \
