@@ -1,4 +1,4 @@
-"""Require fresh, completed NYSE closes for the live factor and UWM ETFs."""
+"""Require fresh, completed NYSE closes for the live ETF set."""
 
 import argparse
 import logging
@@ -12,8 +12,8 @@ from db_config import config
 from db_utils import get_connection
 
 REQUIRED_SYMBOLS = ("IVV", "IVW", "IVE", "IWM", "UWM")
-TIINGO_SYMBOLS = frozenset(("IVV", "IVW", "IVE", "IWM"))
 MIN_FACTOR_HISTORY_ROWS = 6000
+MIN_UWM_HISTORY_ROWS = 4900
 SETTLEMENT_DELAY = timedelta(minutes=30)
 
 
@@ -57,14 +57,14 @@ def check_history_coverage(symbol, frame):
 
 
 def refresh_completed_bar(symbol, close_ts):
-    """Use Tiingo EOD for factor ETFs; keep UWM on Yahoo."""
-    from data_retrieval import fetch_equity_prices, save_equity_prices, save_equity_prices_bulk
+    """Use Tiingo EOD for all required ETFs, including UWM."""
+    from data_retrieval import fetch_equity_prices, save_equity_prices_bulk
 
-    provider = "tiingo" if symbol in TIINGO_SYMBOLS else "yfinance"
+    provider = "tiingo"
     session_date = close_ts.tz_convert("America/New_York").date().isoformat()
-    # Tiingo adjusts all prior prices after dividends. Re-read all four small
-    # factor histories nightly so their adjusted series stays internally consistent.
-    start_date = "2000-01-01" if provider == "tiingo" else session_date
+    # Tiingo adjusts prior prices after dividends. Re-read these small ETF
+    # histories nightly so their adjusted series stays internally consistent.
+    start_date = "2000-01-01"
     frame = fetch_equity_prices(symbol, start_date=start_date, end_date=session_date,
                                 require_adj_close=True, price_provider=provider,
                                 strict_provider=True)
@@ -76,15 +76,13 @@ def refresh_completed_bar(symbol, close_ts):
         logging.warning("%s: %s returned %d bars, none uniquely matches %s",
                         symbol, provider, len(frame), close_ts)
         return False
-    if provider == "tiingo":
-        if len(frame) < MIN_FACTOR_HISTORY_ROWS or frame["ts"].duplicated().any():
-            raise RuntimeError(f"Suspicious Tiingo history for {symbol}: {len(frame)} rows")
-        if frame["adj_close"].isna().any() or (frame["adj_close"] <= 0).any():
-            raise RuntimeError(f"Tiingo adjusted history incomplete for {symbol}")
-        check_history_coverage(symbol, frame)
-        save_equity_prices_bulk(frame)
-    else:
-        save_equity_prices(matches)
+    minimum_rows = MIN_UWM_HISTORY_ROWS if symbol == "UWM" else MIN_FACTOR_HISTORY_ROWS
+    if len(frame) < minimum_rows or frame["ts"].duplicated().any():
+        raise RuntimeError(f"Suspicious Tiingo history for {symbol}: {len(frame)} rows")
+    if frame["adj_close"].isna().any() or (frame["adj_close"] <= 0).any():
+        raise RuntimeError(f"Tiingo adjusted history incomplete for {symbol}")
+    check_history_coverage(symbol, frame)
+    save_equity_prices_bulk(frame)
     if not stored_completed_bar(symbol, close_ts):
         logging.error("%s: %s close did not persist", symbol, session_date)
         return False
