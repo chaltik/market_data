@@ -225,7 +225,7 @@ def save_eco_metadata(
         conn.commit()
 
 ### ✅ Fetching Data ###
-def fetch_equity_prices(symbol, start_date=None, end_date=None):
+def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_close=False):
     """
     Return DataFrame with columns:
       ts (America/New_York close), open, high, low, close, volume, adj_close, symbol
@@ -292,6 +292,8 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None):
             "volume": pd.to_numeric(df.get("volume"), errors="coerce"),
         })
         # adjClose may be present; if not, fall back to close
+        if require_adj_close and "adjClose" not in df.columns and "adj_close" not in df.columns:
+            raise ValueError(f"Tiingo adjusted close missing for {symbol}")
         if "adjClose" in df.columns:
             out["adj_close"] = pd.to_numeric(df["adjClose"], errors="coerce")
         elif "adj_close" in df.columns:
@@ -301,10 +303,13 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None):
 
         out["symbol"] = symbol
         out = out.dropna(subset=["ts", "close"])  # keep only valid rows
-        return out
+        return _completed_equity_bars(out)
 
     except Exception as e:
-        logging.warning("Tiingo failed for %s (%s); falling back to yfinance", symbol, e)
+        if os.environ.get("MARKET_DATA_PRICE_PROVIDER", "tiingo") == "yfinance":
+            logging.debug("Using yfinance for %s", symbol)
+        else:
+            logging.warning("Tiingo failed for %s (%s); falling back to yfinance", symbol, e)
 
     # ---------------------------
     # Path B: yfinance fallback
@@ -358,6 +363,8 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None):
     col_close = _pick("Close")
     col_vol   = _pick("Volume")
     col_adj   = _pick("Adj Close")  # may be None
+    if require_adj_close and col_adj is None:
+        raise ValueError(f"Yahoo adjusted close missing for {symbol}")
 
     out = pd.DataFrame({
         "ts": df["ts"],
@@ -371,7 +378,21 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None):
 
     out["symbol"] = symbol
     out = out.dropna(subset=["ts", "close"])
-    return out
+    return _completed_equity_bars(out)
+
+
+def _completed_equity_bars(df, now=None):
+    """Never stamp a provisional daily bar with a future NYSE closing time."""
+    if df.empty:
+        return df
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    cutoff = now - pd.Timedelta(minutes=30)
+    complete = df[pd.to_datetime(df["ts"], utc=True) <= cutoff]
+    if len(complete) != len(df):
+        logging.info("Discarded %d provisional equity daily bars", len(df) - len(complete))
+    return complete
 
 
 def fetch_crypto_prices(symbol):
@@ -959,7 +980,10 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider):
         df = fetch_equity_prices(symbol)
         if not df.empty:
             save_equity_prices(df)
-            logging.info(f"Stored {symbol} equity data.")
+            logging.info("Stored %s equity data through %s (%d bars).",
+                         symbol, pd.to_datetime(df["ts"]).max(), len(df))
+        else:
+            logging.warning("No completed daily bars returned for %s", symbol)
 
     for symbol in ([] if eco_only else crypto_symbols):
         if not check_metadata_exists(symbol, "crypto"):
