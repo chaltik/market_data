@@ -44,6 +44,9 @@ for path in sys.argv[1:4]:
         assets = yaml.safe_load(handle) or {}
     symbols.update(str(symbol) for symbol in assets.get("equities", []))
 
+# Factor ETFs are loaded and verified from Tiingo below, never from Yahoo.
+symbols.difference_update({"IVV", "IVW", "IVE", "IWM"})
+
 with open(sys.argv[4], "w") as handle:
     yaml.safe_dump({"equities": sorted(symbols)}, handle, sort_keys=False)
 PY
@@ -58,4 +61,5 @@ PY
 
 # The broad price pass can receive an older nonempty Yahoo response. Refetch
 # these live-book ETFs and fail the cron if the last completed close is absent.
+# The four factor ETFs use Tiingo EOD; UWM remains on Yahoo.
 "${PYTHON[@]}" "$ROOT/required_etf_daily_check.py"

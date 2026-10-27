@@ -13,6 +13,7 @@ from tiingo import TiingoClient
 from tiingo.restclient import RestClientError
 import requests
 import yfinance as yf
+from psycopg2.extras import execute_values
 from fredapi import Fred
 from db_utils import get_connection, run_sql
 from db_config import config
@@ -225,7 +226,8 @@ def save_eco_metadata(
         conn.commit()
 
 ### ✅ Fetching Data ###
-def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_close=False):
+def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_close=False,
+                        price_provider=None, strict_provider=False):
     """
     Return DataFrame with columns:
       ts (America/New_York close), open, high, low, close, volume, adj_close, symbol
@@ -250,12 +252,15 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_clos
             start_date = "1980-01-01"
 
     nyse = mcal.get_calendar("NYSE")
+    price_provider = price_provider or os.environ.get("MARKET_DATA_PRICE_PROVIDER", "tiingo")
+    if price_provider not in {"tiingo", "yfinance"}:
+        raise ValueError(f"Unknown equity price provider: {price_provider}")
 
     # ---------------------------
     # Path A: Tiingo first
     # ---------------------------
     try:
-        if os.environ.get("MARKET_DATA_PRICE_PROVIDER", "tiingo") == "yfinance":
+        if price_provider == "yfinance":
             raise ValueError("yfinance selected; skipping Tiingo")
         tiingo_kwargs = {"frequency": "daily", "startDate": start_date}
         if end_date is not None:
@@ -306,7 +311,9 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_clos
         return _completed_equity_bars(out)
 
     except Exception as e:
-        if os.environ.get("MARKET_DATA_PRICE_PROVIDER", "tiingo") == "yfinance":
+        if price_provider == "tiingo" and strict_provider:
+            raise RuntimeError(f"Tiingo price request failed for {symbol}; Yahoo fallback disabled") from e
+        if price_provider == "yfinance":
             logging.debug("Using yfinance for %s", symbol)
         else:
             logging.warning("Tiingo failed for %s (%s); falling back to yfinance", symbol, e)
@@ -540,6 +547,37 @@ def save_equity_prices(df, conn_params=None):
                 row.get("close"), row.get("volume"), row.get("adj_close"),
             ))
         conn.commit()
+
+
+def save_equity_prices_bulk(df):
+    """Refresh a whole Tiingo history, including dividend-adjusted past closes."""
+    if df.empty:
+        return
+
+    def numeric(value, integer=False):
+        if pd.isna(value):
+            return None
+        return int(value) if integer else float(value)
+
+    values = [
+        (row["symbol"], pd.to_datetime(row["ts"]).to_pydatetime(),
+         numeric(row["open"]), numeric(row["high"]), numeric(row["low"]),
+         numeric(row["close"]), numeric(row["volume"], integer=True),
+         numeric(row["adj_close"]))
+        for _, row in df.iterrows()
+    ]
+    with get_connection(config()) as (conn, cur):
+        execute_values(cur, """
+            INSERT INTO price_data.equities_us_daily
+                (symbol, ts, open, high, low, close, volume, adj_close)
+            VALUES %s
+            ON CONFLICT (symbol, ts) DO UPDATE SET
+                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                close = EXCLUDED.close, volume = EXCLUDED.volume,
+                adj_close = EXCLUDED.adj_close
+        """, values, page_size=1000)
+        conn.commit()
+    logging.info("Refreshed %d historical bars for %s", len(values), df["symbol"].iloc[0])
 
 
 
