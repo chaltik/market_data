@@ -2,7 +2,6 @@
 
 import argparse
 import logging
-import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -13,6 +12,8 @@ from db_config import config
 from db_utils import get_connection
 
 REQUIRED_SYMBOLS = ("IVV", "IVW", "IVE", "IWM", "UWM")
+TIINGO_SYMBOLS = frozenset(("IVV", "IVW", "IVE", "IWM"))
+MIN_FACTOR_HISTORY_ROWS = 6000
 SETTLEMENT_DELAY = timedelta(minutes=30)
 
 
@@ -42,29 +43,54 @@ def stored_completed_bar(symbol, close_ts):
                 and row["close"] > 0 and row["adj_close"] > 0)
 
 
-def refresh_completed_bar(symbol, close_ts):
-    """Use the same Yahoo raw-close/adjusted-close convention as the nightly loader."""
-    os.environ["MARKET_DATA_PRICE_PROVIDER"] = "yfinance"
-    from data_retrieval import fetch_equity_prices, save_equity_prices
+def check_history_coverage(symbol, frame):
+    """Prevent a partial Tiingo response from leaving old Yahoo-only dates."""
+    source_dates = set(pd.to_datetime(frame["ts"]).dt.tz_convert("America/New_York").dt.date)
+    with get_connection(config()) as (_, cur):
+        cur.execute(
+            """SELECT (ts AT TIME ZONE 'America/New_York')::date AS trade_date
+               FROM price_data.equities_us_daily WHERE symbol = %s""", (symbol,))
+        old_dates = {row["trade_date"] for row in cur.fetchall()}
+    missing = old_dates - source_dates
+    if missing:
+        raise RuntimeError(f"Tiingo history for {symbol} omits {len(missing)} existing dates")
 
+
+def refresh_completed_bar(symbol, close_ts):
+    """Use Tiingo EOD for factor ETFs; keep UWM on Yahoo."""
+    from data_retrieval import fetch_equity_prices, save_equity_prices, save_equity_prices_bulk
+
+    provider = "tiingo" if symbol in TIINGO_SYMBOLS else "yfinance"
     session_date = close_ts.tz_convert("America/New_York").date().isoformat()
-    frame = fetch_equity_prices(symbol, start_date=session_date, end_date=session_date,
-                                require_adj_close=True)
+    # Tiingo adjusts all prior prices after dividends. Re-read all four small
+    # factor histories nightly so their adjusted series stays internally consistent.
+    start_date = "2000-01-01" if provider == "tiingo" else session_date
+    frame = fetch_equity_prices(symbol, start_date=start_date, end_date=session_date,
+                                require_adj_close=True, price_provider=provider,
+                                strict_provider=True)
     if frame.empty:
-        logging.warning("%s: Yahoo returned no completed %s bar", symbol, session_date)
+        logging.warning("%s: %s returned no completed %s bar", symbol, provider, session_date)
         return False
     matches = frame[pd.to_datetime(frame["ts"], utc=True) == close_ts.tz_convert("UTC")]
     if len(matches) != 1:
-        logging.warning("%s: Yahoo returned %d bars, none uniquely matches %s",
-                        symbol, len(frame), close_ts)
+        logging.warning("%s: %s returned %d bars, none uniquely matches %s",
+                        symbol, provider, len(frame), close_ts)
         return False
-    save_equity_prices(matches)
+    if provider == "tiingo":
+        if len(frame) < MIN_FACTOR_HISTORY_ROWS or frame["ts"].duplicated().any():
+            raise RuntimeError(f"Suspicious Tiingo history for {symbol}: {len(frame)} rows")
+        if frame["adj_close"].isna().any() or (frame["adj_close"] <= 0).any():
+            raise RuntimeError(f"Tiingo adjusted history incomplete for {symbol}")
+        check_history_coverage(symbol, frame)
+        save_equity_prices_bulk(frame)
+    else:
+        save_equity_prices(matches)
     if not stored_completed_bar(symbol, close_ts):
         logging.error("%s: %s close did not persist", symbol, session_date)
         return False
     row = matches.iloc[0]
-    logging.info("Verified %s %s: raw close=%s adjusted close=%s",
-                 symbol, session_date, row["close"], row["adj_close"])
+    logging.info("Verified %s %s via %s: raw close=%s adjusted close=%s",
+                 symbol, session_date, provider, row["close"], row["adj_close"])
     return True
 
 

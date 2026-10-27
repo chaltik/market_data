@@ -43,20 +43,25 @@ class RequiredEtfCheckTest(unittest.TestCase):
                             now="2026-10-27 21:00Z", refresh=lambda *_: False,
                             sleep=lambda _: None)
 
-    def test_exact_session_uses_yahoo_raw_and_adjusted_columns(self):
+    def test_factor_etf_uses_tiingo_raw_and_adjusted_columns(self):
         close_ts = pd.Timestamp("2026-10-26 20:00Z")
         frame = pd.DataFrame({"ts": [close_ts], "symbol": ["IVV"],
                               "close": [101.0], "adj_close": [99.0]})
         with patch.object(data_retrieval, "fetch_equity_prices", return_value=frame) as fetch, \
-             patch.object(data_retrieval, "save_equity_prices") as save, \
+             patch.object(data_retrieval, "save_equity_prices_bulk") as save, \
+             patch("required_etf_daily_check.MIN_FACTOR_HISTORY_ROWS", 1), \
+             patch("required_etf_daily_check.check_history_coverage"), \
              patch("required_etf_daily_check.stored_completed_bar", return_value=True):
             self.assertTrue(refresh_completed_bar("IVV", close_ts))
         self.assertTrue(fetch.call_args.kwargs["require_adj_close"])
+        self.assertEqual(fetch.call_args.kwargs["price_provider"], "tiingo")
+        self.assertTrue(fetch.call_args.kwargs["strict_provider"])
+        self.assertEqual(fetch.call_args.kwargs["start_date"], "2000-01-01")
         saved = save.call_args.args[0]
         self.assertEqual(saved.iloc[0]["close"], 101.0)
         self.assertEqual(saved.iloc[0]["adj_close"], 99.0)
 
-    def test_stale_nonempty_yahoo_response_does_not_pass(self):
+    def test_stale_nonempty_provider_response_does_not_pass(self):
         close_ts = pd.Timestamp("2026-10-26 20:00Z")
         old = pd.DataFrame({"ts": [pd.Timestamp("2026-10-23 20:00Z")],
                             "symbol": ["IVV"], "close": [100.0], "adj_close": [99.0]})
@@ -64,6 +69,26 @@ class RequiredEtfCheckTest(unittest.TestCase):
              patch.object(data_retrieval, "save_equity_prices") as save:
             self.assertFalse(refresh_completed_bar("IVV", close_ts))
         save.assert_not_called()
+
+    def test_uwm_remains_on_yahoo(self):
+        close_ts = pd.Timestamp("2026-10-26 20:00Z")
+        frame = pd.DataFrame({"ts": [close_ts], "symbol": ["UWM"],
+                              "close": [56.0], "adj_close": [56.0]})
+        with patch.object(data_retrieval, "fetch_equity_prices", return_value=frame) as fetch, \
+             patch.object(data_retrieval, "save_equity_prices"), \
+             patch("required_etf_daily_check.stored_completed_bar", return_value=True):
+            self.assertTrue(refresh_completed_bar("UWM", close_ts))
+        self.assertEqual(fetch.call_args.kwargs["price_provider"], "yfinance")
+
+    def test_strict_tiingo_does_not_fall_back_to_yahoo(self):
+        with patch.object(data_retrieval, "get_latest_ts_for_symbol", return_value=None), \
+             patch.object(data_retrieval.ti_client, "get_dataframe", side_effect=RuntimeError("unavailable")), \
+             patch.object(data_retrieval.yf, "Ticker") as yahoo:
+            with self.assertRaisesRegex(RuntimeError, "Yahoo fallback disabled"):
+                data_retrieval.fetch_equity_prices(
+                    "IVV", start_date="2026-10-26", end_date="2026-10-26",
+                    price_provider="tiingo", strict_provider=True)
+        yahoo.assert_not_called()
 
 
 if __name__ == "__main__":
