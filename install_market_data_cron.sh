@@ -5,9 +5,12 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 schedule="$root/market_data_daily.cron"
 job="$root/market_data_daily_update.sh"
 fred_job="$root/hy_oas_daily_update.sh"
+repair_job="$root/required_etf_repair.sh"
 deployment_root="/home/captain/projects/market_data"
 expected_fred="30 7 * * * $deployment_root/hy_oas_daily_update.sh >> $deployment_root/logs/hy_oas_daily.log 2>&1"
 expected="0 18 * * * $deployment_root/market_data_daily_update.sh >> $deployment_root/logs/market_data_daily.log 2>&1"
+expected_repair_evening="15 19 * * * $deployment_root/required_etf_repair.sh >> $deployment_root/logs/required_etf_repair.log 2>&1"
+expected_repair_morning="0 7 * * * $deployment_root/required_etf_repair.sh >> $deployment_root/logs/required_etf_repair.log 2>&1"
 
 if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--check" ) ]]; then
   echo "Usage: $0 [--check]" >&2
@@ -22,6 +25,10 @@ if [[ ! -x "$fred_job" ]]; then
   echo "FRED update script is missing or not executable: $fred_job" >&2
   exit 1
 fi
+if [[ ! -x "$repair_job" ]]; then
+  echo "ETF repair script is missing or not executable: $repair_job" >&2
+  exit 1
+fi
 if ! grep -Fqx "$expected" "$schedule"; then
   echo "Cron schedule does not call the expected daily update script." >&2
   exit 1
@@ -30,6 +37,12 @@ if ! grep -Fqx "$expected_fred" "$schedule"; then
   echo "Cron schedule does not call the expected FRED update script." >&2
   exit 1
 fi
+for expected_repair in "$expected_repair_evening" "$expected_repair_morning"; do
+  if ! grep -Fqx "$expected_repair" "$schedule"; then
+    echo "Cron schedule does not call the expected ETF repair script." >&2
+    exit 1
+  fi
+done
 
 if [[ ${1:-} == "--check" ]]; then
   echo "Cron schedule and update script match."

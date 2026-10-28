@@ -10,7 +10,8 @@ os.environ.setdefault("TIINGO_API_KEY", "test-only")
 import data_retrieval
 from data_retrieval import _completed_equity_bars
 from required_etf_daily_check import (FACTOR_SYMBOLS, REPLICA_SYMBOLS, REQUIRED_SYMBOLS,
-                                      latest_completed_close, refresh_completed_bar,
+                                      audit_and_repair, latest_completed_close,
+                                      refresh_completed_bar,
                                       verify_required)
 
 
@@ -49,6 +50,26 @@ class RequiredEtfCheckTest(unittest.TestCase):
             verify_required(symbols=("IVE",), attempts=2, delay_seconds=0,
                             now="2026-10-27 21:00Z", refresh=lambda *_: False,
                             sleep=lambda _: None)
+
+    def test_independent_audit_reruns_only_missing_etfs(self):
+        present = {"IVV", "IVE"}
+        called = []
+        def refresh(symbol, close_ts):
+            called.append(symbol)
+            present.add(symbol)
+            return True
+        audit_and_repair(symbols=("IVV", "IVE", "GLD"), attempts=1,
+                         now="2026-10-27 21:00Z",
+                         stored=lambda symbol, _: symbol in present,
+                         refresh=refresh)
+        self.assertEqual(called, ["GLD"])
+
+    def test_independent_audit_fails_if_rerun_does_not_fill(self):
+        with self.assertRaisesRegex(RuntimeError, "Required ETF bars missing"):
+            audit_and_repair(symbols=("GLD",), attempts=1,
+                             now="2026-10-27 21:00Z",
+                             stored=lambda *_: False,
+                             refresh=lambda *_: False)
 
     def test_factor_etf_uses_tiingo_raw_and_adjusted_columns(self):
         close_ts = pd.Timestamp("2026-10-26 20:00Z")
