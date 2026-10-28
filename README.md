@@ -15,7 +15,8 @@
 ```
 market_data/
 │── data_retrieval.py   # Main script to fetch and store market data
-│── macro_assets.yaml   # List of tracked equities & crypto (configurable)
+│── macro_assets.example.yaml # Example asset configuration
+│── macro_assets.yaml   # Local download selection (ignored by Git)
 │── .env                # API key (ignored by Git)
 │── database.ini        # Database connection config (ignored by Git)
 │── README.md           # This documentation
@@ -31,6 +32,15 @@ market_data/
 ```
 pip install -r requirements.txt
 ```
+
+Create your local asset selection from the example:
+
+```bash
+cp macro_assets.example.yaml macro_assets.yaml
+```
+
+Download selection YAMLs and `.python-version` are local files ignored by Git.
+Use `main` for ongoing development; feature branches are unnecessary unless requested.
 
 Provide Required Config Files
 Ensure the following files exist in the project root:

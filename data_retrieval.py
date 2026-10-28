@@ -971,6 +971,10 @@ def save_eco_from_fred_to_db(
 @click.option('--price-provider', type=click.Choice(['tiingo', 'yfinance']),
               default='tiingo', show_default=True,
               help="Provider for equity prices and missing equity metadata.")
+@click.option('--skip-current', is_flag=True, default=False,
+              help="Skip equities whose latest stored daily bar reaches --current-through.")
+@click.option('--current-through', default=None,
+              help="Date considered current by --skip-current (YYYY-MM-DD).")
 # Explicit parameter name: `eco_series` is ALREADY a local inside main() -- the
 # list of (id, name, release) tuples built from the YAML -- so letting click
 # derive that name from --eco-series shadowed the CLI value with a list, and the
@@ -978,7 +982,8 @@ def save_eco_from_fred_to_db(
 @click.option('--eco-series', 'eco_series_filter', default=None,
               help="Comma-separated fred_series_id list to refresh, filtered "
                    "from macro_series.yaml. Default: every series in the file.")
-def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider):
+def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
+         skip_current, current_through):
     """Refresh market and macro data into coredata.
 
     The full run touches every asset in macro_assets.yaml plus all ~84 FRED
@@ -991,6 +996,9 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider):
     if eco_only and assets_only:
         raise click.UsageError("--eco-only and --assets-only are mutually "
                                "exclusive; passing both would skip everything.")
+    if skip_current and not current_through:
+        raise click.UsageError("--skip-current requires --current-through YYYY-MM-DD")
+    current_through_date = pd.Timestamp(current_through).date() if current_through else None
 
     os.environ["MARKET_DATA_PRICE_PROVIDER"] = price_provider
 
@@ -1007,6 +1015,12 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider):
         logging.info("🔹 --eco-only: skipping equities, crypto, VIX, CMT, GSCPI.")
     for symbol in ([] if eco_only else equity_symbols):
         logging.info(f'Processing {symbol}')
+        if skip_current:
+            latest_ts = get_latest_ts_for_symbol(symbol, "equities_us_daily", ts_col="ts")
+            latest_date = pd.to_datetime(latest_ts).tz_convert("America/New_York").date() if latest_ts is not None else None
+            if latest_date is not None and latest_date >= current_through_date:
+                logging.info("Skipping %s; latest stored bar is %s.", symbol, latest_date)
+                continue
         logging.info(f'Do we have {symbol} metadata?')
         if not check_metadata_exists(symbol, "equities_us"):
             logging.info(f"Fetching metadata for {symbol}...")

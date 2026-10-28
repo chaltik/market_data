@@ -1,2 +1,11 @@
 .env
 *.ini
+
+# Local runtime and download selections
+.python-version
+*.yaml
+*.yml
+!*.example.yaml
+!*.example.yml
+__pycache__/
+logs/

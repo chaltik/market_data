@@ -3,6 +3,10 @@ PATH=/home/captain/.pyenv/bin:/home/captain/.pyenv/shims:/usr/local/sbin:/usr/lo
 MAILTO=""
 CRON_TZ=America/Los_Angeles
 
+# Refresh the FRED HY OAS series at 07:30 Pacific local time, after the
+# morning FRED release window.
+30 7 * * * /home/captain/projects/market_data/hy_oas_daily_update.sh >> /home/captain/projects/market_data/logs/hy_oas_daily.log 2>&1
+
 # Incrementally refresh the Nasdaq-100, approximate S&P 500, and target ETF
 # universes at 18:00 Pacific local time.
 0 18 * * * /home/captain/projects/market_data/market_data_daily_update.sh >> /home/captain/projects/market_data/logs/market_data_daily.log 2>&1
