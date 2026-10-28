@@ -11,8 +11,9 @@ from decimal import Decimal
 import psycopg2
 
 from db_config import config
-from hy_oas import RELEASE_NAME, SERIES_ID, SERIES_NAME, VINTAGE_SOURCE
+from hy_oas import RELEASE_NAME, SERIES_ID, VINTAGE_SOURCE
 
+SERIES_NAME = "HY OAS"  # Historical key at the time of this completed repair.
 LEGACY_NAME = SERIES_ID
 OBS_DATE = date(2026, 10, 26)
 NEXT_DATE = date(2026, 10, 27)

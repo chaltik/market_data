@@ -34,7 +34,7 @@ class HyOasTest(unittest.TestCase):
         self.assertEqual(latest_observation(cursor), date(2026, 10, 27))
         sql, params = cursor.statements[-1]
         self.assertIn("d.series_name = %s", sql)
-        self.assertEqual(params, ("BAMLH0A0HYM2", "ICE BofA US High Yield OAS", "HY OAS"))
+        self.assertEqual(params, ("BAMLH0A0HYM2", "ICE BofA US High Yield OAS", "BAMLH0A0HYM2"))
 
     def test_generic_writer_refuses_hy_oas_alias(self):
         frame = pd.DataFrame([{

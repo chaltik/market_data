@@ -28,7 +28,7 @@ from db_config import config
 
 SERIES_ID = "BAMLH0A0HYM2"
 RELEASE_NAME = "ICE BofA US High Yield OAS"
-SERIES_NAME = "HY OAS"
+SERIES_NAME = SERIES_ID
 ARCHIVE_SOURCE = "inferred_next_nyse_session_from_archive"
 FRED_SOURCE = "inferred_next_nyse_session_after_fred_fetch"
 VINTAGE_SOURCE = "inferred_next_nyse_session_after_alfred_vintage"

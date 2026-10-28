@@ -131,6 +131,25 @@ def verify_required(symbols=REQUIRED_SYMBOLS, attempts=3, delay_seconds=60,
     raise RuntimeError(f"Required ETF bars missing for {close_ts}: {sorted(pending)}")
 
 
+def audit_and_repair(symbols=REQUIRED_SYMBOLS, attempts=3, delay_seconds=60,
+                     now=None, stored=stored_completed_bar,
+                     refresh=refresh_completed_bar, sleep=time.sleep):
+    """Independently rerun only missing completed bars, then verify all 26."""
+    close_ts = latest_completed_close(now)
+    missing = [symbol for symbol in symbols if not stored(symbol, close_ts)]
+    if missing:
+        logging.warning("Missing %s ETF closes for %s: %s; rerunning Tiingo",
+                        len(missing), close_ts, missing)
+        verify_required(symbols=missing, attempts=attempts,
+                        delay_seconds=delay_seconds, now=now,
+                        refresh=refresh, sleep=sleep)
+    remaining = [symbol for symbol in symbols if not stored(symbol, close_ts)]
+    if remaining:
+        raise RuntimeError(f"ETF audit failed after rerun for {close_ts}: {remaining}")
+    logging.info("ETF audit passed for %s: %s required closes present", close_ts, len(symbols))
+    return close_ts
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--attempts", type=int, default=3)
@@ -139,15 +158,21 @@ def main():
                         help="Rebuild all selected ETF histories from Tiingo")
     parser.add_argument("--replica-only", action="store_true",
                         help="Check only the 21 ETF replica-book symbols")
+    parser.add_argument("--repair-missing", action="store_true",
+                        help="Independently rerun only missing ETF closes")
     args = parser.parse_args()
     if args.attempts < 1 or args.delay_seconds < 0:
         parser.error("attempts must be >= 1 and delay-seconds must be >= 0")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     sunday = datetime.now(ZoneInfo("America/Los_Angeles")).weekday() == 6
-    verify_required(symbols=REPLICA_SYMBOLS if args.replica_only else REQUIRED_SYMBOLS,
-                    attempts=args.attempts, delay_seconds=args.delay_seconds,
-                    refresh=partial(refresh_completed_bar,
-                                    full_history=args.full_history or sunday))
+    symbols = REPLICA_SYMBOLS if args.replica_only else REQUIRED_SYMBOLS
+    refresh = partial(refresh_completed_bar, full_history=args.full_history or sunday)
+    if args.repair_missing:
+        audit_and_repair(symbols=symbols, attempts=args.attempts,
+                         delay_seconds=args.delay_seconds, refresh=refresh)
+    else:
+        verify_required(symbols=symbols, attempts=args.attempts,
+                        delay_seconds=args.delay_seconds, refresh=refresh)
 
 
 if __name__ == "__main__":
