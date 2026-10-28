@@ -57,8 +57,21 @@ END $$;
 
 -- Keep the former VIX table name available to existing read queries.
 -- On the first migration it is a table; on later runs it is this view.
-DROP VIEW IF EXISTS market_indices.vix;
-DROP TABLE IF EXISTS market_indices.vix;
+DO $$
+DECLARE
+    existing_kind "char";
+BEGIN
+    SELECT c.relkind INTO existing_kind
+    FROM pg_class AS c
+    JOIN pg_namespace AS n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'market_indices' AND c.relname = 'vix';
+
+    IF existing_kind = 'v' THEN
+        DROP VIEW market_indices.vix;
+    ELSIF existing_kind IN ('r', 'p') THEN
+        DROP TABLE market_indices.vix;
+    END IF;
+END $$;
 DROP TABLE IF EXISTS market_indices.move;
 DROP TABLE IF EXISTS market_indices.gvz;
 DROP TABLE IF EXISTS market_indices.ovx;
