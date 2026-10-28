@@ -9,10 +9,17 @@ os.environ.setdefault("TIINGO_API_KEY", "test-only")
 
 import data_retrieval
 from data_retrieval import _completed_equity_bars
-from required_etf_daily_check import latest_completed_close, refresh_completed_bar, verify_required
+from required_etf_daily_check import (FACTOR_SYMBOLS, REPLICA_SYMBOLS, REQUIRED_SYMBOLS,
+                                      latest_completed_close, refresh_completed_bar,
+                                      verify_required)
 
 
 class RequiredEtfCheckTest(unittest.TestCase):
+    def test_required_symbols_include_whole_replica_book(self):
+        self.assertEqual(len(REPLICA_SYMBOLS), 21)
+        self.assertEqual(len(REQUIRED_SYMBOLS), 26)
+        self.assertEqual(set(REQUIRED_SYMBOLS), set(FACTOR_SYMBOLS) | set(REPLICA_SYMBOLS))
+
     def test_nyse_completed_session_before_and_after_close(self):
         before = datetime(2026, 10, 27, 16, 40, tzinfo=timezone.utc)  # 12:40 ET
         after = datetime(2026, 10, 27, 21, 0, tzinfo=timezone.utc)   # 17:00 ET
@@ -83,6 +90,36 @@ class RequiredEtfCheckTest(unittest.TestCase):
         self.assertEqual(fetch.call_args.kwargs["price_provider"], "tiingo")
         self.assertTrue(fetch.call_args.kwargs["strict_provider"])
         self.assertEqual(fetch.call_args.kwargs["start_date"], "2000-01-01")
+        save.assert_called_once()
+
+    def test_replica_etf_uses_tiingo_recent_window(self):
+        close_ts = pd.Timestamp("2026-10-27 20:00Z")
+        frame = pd.DataFrame({"ts": [close_ts], "symbol": ["GLD"],
+                              "close": [400.0], "adj_close": [399.0]})
+        with patch.object(data_retrieval, "fetch_equity_prices", return_value=frame) as fetch, \
+             patch.object(data_retrieval, "save_equity_prices_bulk") as save, \
+             patch("required_etf_daily_check.MIN_RECENT_HISTORY_ROWS", 1), \
+             patch("required_etf_daily_check.check_history_coverage") as coverage, \
+             patch("required_etf_daily_check.stored_completed_bar", return_value=True):
+            self.assertTrue(refresh_completed_bar("GLD", close_ts))
+        self.assertEqual(fetch.call_args.kwargs["price_provider"], "tiingo")
+        self.assertTrue(fetch.call_args.kwargs["strict_provider"])
+        self.assertEqual(fetch.call_args.kwargs["start_date"], "2026-09-22")
+        coverage.assert_not_called()
+        save.assert_called_once()
+
+    def test_replica_full_refresh_checks_old_date_coverage(self):
+        close_ts = pd.Timestamp("2026-10-27 20:00Z")
+        frame = pd.DataFrame({"ts": [close_ts], "symbol": ["IBIT"],
+                              "close": [70.0], "adj_close": [70.0]})
+        with patch.object(data_retrieval, "fetch_equity_prices", return_value=frame) as fetch, \
+             patch.object(data_retrieval, "save_equity_prices_bulk") as save, \
+             patch("required_etf_daily_check.MIN_REPLICA_HISTORY_ROWS", 1), \
+             patch("required_etf_daily_check.check_history_coverage") as coverage, \
+             patch("required_etf_daily_check.stored_completed_bar", return_value=True):
+            self.assertTrue(refresh_completed_bar("IBIT", close_ts, full_history=True))
+        self.assertEqual(fetch.call_args.kwargs["start_date"], "2000-01-01")
+        coverage.assert_called_once()
         save.assert_called_once()
 
     def test_strict_tiingo_does_not_fall_back_to_yahoo(self):

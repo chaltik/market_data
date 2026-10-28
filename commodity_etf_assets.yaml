@@ -1,0 +1,23 @@
+# ETF replica of the futures book. Keep in sync with strader's etf_book universe.
+equities:
+  - GLD
+  - SLV
+  - CPER
+  - PPLT
+  - PALL
+  - USO
+  - BNO
+  - UGA
+  - UNG
+  - CORN
+  - WEAT
+  - SOYB
+  - CANE
+  - SHY
+  - IEI
+  - IEF
+  - TLH
+  - TLT
+  - EDV
+  - BNDX
+  - IBIT
