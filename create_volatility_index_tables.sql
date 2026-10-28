@@ -55,15 +55,25 @@ BEGIN
     END IF;
 END $$;
 
+-- Keep the former VIX table name available to existing read queries.
+-- On the first migration it is a table; on later runs it is this view.
+DROP VIEW IF EXISTS market_indices.vix;
 DROP TABLE IF EXISTS market_indices.vix;
 DROP TABLE IF EXISTS market_indices.move;
 DROP TABLE IF EXISTS market_indices.gvz;
 DROP TABLE IF EXISTS market_indices.ovx;
+
+CREATE VIEW market_indices.vix AS
+    SELECT date, value
+    FROM market_indices.volatility_indices
+    WHERE index_symbol = 'VIX';
 
 CREATE INDEX IF NOT EXISTS volatility_indices_symbol_date_idx
     ON market_indices.volatility_indices (index_symbol, date);
 
 COMMENT ON TABLE market_indices.volatility_indices IS
     'Daily closes for volatility indices; one row per date and index_symbol, with source identifiers.';
+COMMENT ON VIEW market_indices.vix IS
+    'Read-compatible VIX-only view over market_indices.volatility_indices.';
 
 COMMIT;

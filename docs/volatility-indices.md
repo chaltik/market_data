@@ -12,9 +12,11 @@ The daily loader stores VIX, MOVE, GVZ, and OVX together in
 | `OVX` | FRED | `OVXCLS` |
 
 Run `create_volatility_index_tables.sql` once to create the consolidated table.
-It copies any rows in the legacy per-index tables, then removes those tables.
-The scheduled daily loader backfills available history on first run and
-upserts subsequent values by date and index symbol.
+It copies any rows in the legacy per-index tables, replaces the old `vix` table
+with a compatibility view, and removes the legacy MOVE/GVZ/OVX tables. The
+scheduled daily loader backfills available history on first run and upserts
+subsequent values by date and index symbol. Existing VIX read queries can
+continue to use `market_indices.vix`; write new data to the consolidated table.
 
 For one series, query it directly:
 
