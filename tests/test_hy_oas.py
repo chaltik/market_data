@@ -1,10 +1,16 @@
 import tempfile
 import unittest
+import os
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from hy_oas import ARCHIVE_SOURCE, FRED_SOURCE, VINTAGE_SOURCE, next_nyse_session, read_archive, store
+import pandas as pd
+
+os.environ.setdefault("TIINGO_API_KEY", "test-only")
+from data_retrieval import save_eco_from_fred_to_db
+from hy_oas import (ARCHIVE_SOURCE, FRED_SOURCE, VINTAGE_SOURCE,
+                    latest_observation, next_nyse_session, read_archive, store)
 
 
 class RecordingCursor:
@@ -18,8 +24,28 @@ class RecordingCursor:
     def fetchall(self):
         return []
 
+    def fetchone(self):
+        return (date(2026, 10, 27),)
+
 
 class HyOasTest(unittest.TestCase):
+    def test_latest_observation_ignores_legacy_alias(self):
+        cursor = RecordingCursor()
+        self.assertEqual(latest_observation(cursor), date(2026, 10, 27))
+        sql, params = cursor.statements[-1]
+        self.assertIn("d.series_name = %s", sql)
+        self.assertEqual(params, ("BAMLH0A0HYM2", "ICE BofA US High Yield OAS", "HY OAS"))
+
+    def test_generic_writer_refuses_hy_oas_alias(self):
+        frame = pd.DataFrame([{
+            "fred_series_id": "BAMLH0A0HYM2", "series_name": "BAMLH0A0HYM2",
+            "release_name": "ICE BofA US High Yield OAS", "release_id": 20261028,
+            "release_date": date(2026, 10, 28),
+            "reference_date": date(2026, 10, 27), "value": Decimal("3.18"),
+        }])
+        with self.assertRaisesRegex(ValueError, "must be loaded with hy_oas.py"):
+            save_eco_from_fred_to_db(frame)
+
     def test_archive_skips_blanks_and_preserves_numeric_weekend_row(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "archive.csv"
