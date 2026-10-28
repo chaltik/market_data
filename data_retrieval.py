@@ -471,6 +471,81 @@ def fetch_vix_from_FRED():
     fred_api = Fred(api_key=os.environ['FRED_API_KEY'])
     return fred_api.get_series("VIXCLS").dropna()
 
+
+def fetch_fred_index_from_FRED(series_id: str) -> pd.Series:
+    """Fetch a daily FRED volatility-index series (e.g. GVZCLS or OVXCLS)."""
+    fred_api = Fred(api_key=os.environ["FRED_API_KEY"])
+    return fred_api.get_series(series_id).dropna()
+
+
+def fetch_move_from_yahoo(start_date: str) -> pd.Series:
+    """Fetch the Yahoo Finance daily close history for the ICE BofA MOVE index."""
+    history = yf.Ticker("^MOVE").history(
+        start=start_date, auto_adjust=False, actions=False
+    )
+    if history.empty or "Close" not in history.columns:
+        raise RuntimeError("Yahoo Finance returned no daily close history for ^MOVE")
+    return pd.to_numeric(history["Close"], errors="coerce").dropna()
+
+
+def save_volatility_index_to_db(series: pd.Series, index_symbol: str,
+                                source: str, source_series_id: str):
+    if series.empty:
+        return
+    df = series.reset_index()
+    df.columns = ["date", "value"]
+    df = df.dropna(subset=["date", "value"])
+    dates = pd.to_datetime(df["date"])
+    if dates.dt.tz is not None:
+        dates = dates.dt.tz_localize(None)
+    df["date"] = dates.dt.date
+    with get_connection(config()) as (conn, cur):
+        for _, row in df.iterrows():
+            cur.execute("""
+                INSERT INTO market_indices.volatility_indices
+                    (date, index_symbol, value, source, source_series_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (date, index_symbol) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    source = EXCLUDED.source,
+                    source_series_id = EXCLUDED.source_series_id;
+            """, (row["date"], index_symbol, round(float(row["value"]), 2),
+                  source, source_series_id))
+        conn.commit()
+
+
+def refresh_volatility_indices():
+    """Backfill/update VIX, MOVE, GVZ, and OVX in market_indices."""
+    for index_symbol, series_id in (
+        ("VIX", "VIXCLS"),
+        ("GVZ", "GVZCLS"),
+        ("OVX", "OVXCLS"),
+    ):
+        latest = run_sql(
+            "SELECT MAX(date) FROM market_indices.volatility_indices WHERE index_symbol = %s",
+            config(), (index_symbol,),
+        ).iloc[0, 0]
+        series = fetch_fred_index_from_FRED(series_id)
+        if latest is not None:
+            # Re-fetch the last stored date too, so provider revisions are upserted.
+            series = series[series.index >= pd.Timestamp(latest)]
+        save_volatility_index_to_db(series, index_symbol, "FRED", series_id)
+        logging.info("Stored %d %s observations through %s.",
+                     len(series), series_id, series.index.max() if not series.empty else None)
+
+    latest_move = run_sql(
+        "SELECT MAX(date) FROM market_indices.volatility_indices WHERE index_symbol = %s",
+        config(), ("MOVE",),
+    ).iloc[0, 0]
+    start_date = (
+        pd.Timestamp(latest_move).strftime("%Y-%m-%d")
+        if latest_move is not None else "1980-01-01"
+    )
+    move = fetch_move_from_yahoo(start_date)
+    save_volatility_index_to_db(move, "MOVE", "Yahoo Finance", "^MOVE")
+    logging.info("Stored %d ^MOVE observations through %s.",
+                 len(move), move.index.max() if not move.empty else None)
+
 def download_treasury_yield_curve(yyyy, n_latest=7):
     csv_url_yyyy = f'https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{yyyy}/all?type=daily_treasury_yield_curve&field_tdr_date_value={yyyy}&page&_format=csv'
     df = pd.read_csv(csv_url_yyyy, nrows=n_latest, index_col=0, parse_dates=True)
@@ -567,6 +642,23 @@ def save_treasury_cmt(df):
             """, (row["Date"].date(), row["Tenor"], round(float(row["Rate"]), 2)))
         conn.commit()
     logging.info(f"Saved {len(df_long)} UST entries")
+
+def refresh_treasury_cmt():
+    """Incrementally load Treasury's own daily par-yield CSV into coredata."""
+    cmt_latest = get_latest_date("interest_rates.treasury_cmt", date_col="date")
+    logging.info("Latest Treasury CMT date stored: %s", cmt_latest)
+    today = pd.Timestamp.today().date()
+    years = range((cmt_latest.year if cmt_latest else 2000), today.year + 1)
+    for year in years:
+        df = download_treasury_yield_curve(year, n_latest=999)
+        if df.empty:
+            raise RuntimeError(f"Treasury CSV for {year} returned no rows")
+        df = df.rename(columns=lambda column: column.strip())
+        if cmt_latest:
+            df = df[df.index > pd.to_datetime(cmt_latest)]
+        logging.info("Treasury %s: %d new dates", year, len(df))
+        if not df.empty:
+            save_treasury_cmt(df)
 
 def save_index_to_db(series: pd.Series, table: str):
     if series.empty:
@@ -901,6 +993,10 @@ def save_eco_from_fred_to_db(
 ### ✅ Main ###
 @click.command()
 @click.option('--assets_file', default="macro_assets.yaml", help="Path to assets YAML file.")
+@click.option('--treasury-only', is_flag=True, default=False,
+              help="Refresh only Treasury CMT rates from the Treasury CSV; skip all other sources.")
+@click.option('--volatility-only', is_flag=True, default=False,
+              help="Refresh VIX, MOVE, GVZ, and OVX index histories only.")
 @click.option('--eco-only', is_flag=True, default=False,
               help="Skip equities/crypto/VIX/CMT/GSCPI; refresh only the FRED "
                    "economic series. Use with --eco-series to target a few.")
@@ -923,8 +1019,8 @@ def save_eco_from_fred_to_db(
 @click.option('--eco-series', 'eco_series_filter', default=None,
               help="Comma-separated fred_series_id list to refresh, filtered "
                    "from macro_series.yaml. Default: every series in the file.")
-def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
-         skip_current, current_through):
+def main(assets_file, treasury_only, volatility_only, eco_only, assets_only,
+         eco_series_filter, price_provider, skip_current, current_through):
     """Refresh market and macro data into coredata.
 
     The full run touches every asset in macro_assets.yaml plus all ~84 FRED
@@ -934,6 +1030,18 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
     re-pulling everything else to get at them. The YAML stays the single
     definition of what exists; these flags only narrow what runs.
     """
+    if treasury_only:
+        if volatility_only or eco_only or assets_only or eco_series_filter or skip_current:
+            raise click.UsageError("--treasury-only cannot be combined with other retrieval modes")
+        refresh_treasury_cmt()
+        logging.info("✅ Treasury CMT refresh complete.")
+        return
+    if volatility_only:
+        if eco_only or assets_only or eco_series_filter or skip_current:
+            raise click.UsageError("--volatility-only cannot be combined with other retrieval modes")
+        refresh_volatility_indices()
+        logging.info("✅ Volatility index refresh complete.")
+        return
     if eco_only and assets_only:
         raise click.UsageError("--eco-only and --assets-only are mutually "
                                "exclusive; passing both would skip everything.")
@@ -991,31 +1099,11 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
     # flags must skip the work, not just its log lines, so a targeted price
     # update cannot fail on an unrelated data source.
     if not eco_only and not assets_only:
-        logging.info("🔹 Updating VIX...")
-        vix_latest = pd.to_datetime(get_latest_date("market_indices.vix"))
-        vix_series = fetch_vix_from_FRED()
-        if vix_latest:
-            vix_series = vix_series[vix_series.index > vix_latest]
-        save_index_to_db(vix_series, "market_indices.vix")
-        logging.info(f"Stored {len(vix_series)} new VIX entries.")
+        logging.info("🔹 Updating volatility indices...")
+        refresh_volatility_indices()
 
         logging.info("🔹 Updating Treasury CMT...")
-        cmt_latest = get_latest_date("interest_rates.treasury_cmt", date_col="date")
-        logging.info(f'Latest cmt data stored is for {cmt_latest}')
-        today = pd.Timestamp.today().date()
-        years = list(range((cmt_latest.year if cmt_latest else 2000), today.year + 1))
-        for y in years:
-            logging.info(f'getting UST history for {y}')
-            df = download_treasury_yield_curve(y, n_latest=999)
-            logging.info(f'{df.shape[0]} rows downloaded')
-            df = df.rename(columns=lambda x: x.strip())
-            # df = df.rename(columns={df.columns[0]: "Date"})
-            # df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-            # df = df.dropna(subset=["Date"])
-            if cmt_latest:
-                df = df[df.index > pd.to_datetime(cmt_latest)]
-                logging.info(f'{df.shape[0]} rows needs to be saved')
-            save_treasury_cmt(df)
+        refresh_treasury_cmt()
 
         logging.info("🔹 Updating GSCPI...")
         gscpi_series = download_gscpi()

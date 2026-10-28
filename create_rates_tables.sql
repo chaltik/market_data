@@ -13,11 +13,3 @@ CREATE TABLE interest_rates.treasury_cmt (
 COMMENT ON TABLE interest_rates.treasury_cmt IS 'Normalized format of daily US Treasury CMT rates.';
 
 CREATE SCHEMA IF NOT EXISTS market_indices;
-
-DROP TABLE IF EXISTS market_indices.vix;
-
-CREATE TABLE market_indices.vix (
-    date DATE PRIMARY KEY,
-    value NUMERIC NOT NULL
-);
-CREATE INDEX vix_date_idx ON market_indices.vix ("date");

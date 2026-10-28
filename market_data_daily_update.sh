@@ -55,3 +55,7 @@ PY
   --assets_file "$combined_tmpfile" \
   --assets-only \
   --price-provider yfinance
+
+# Volatility-index backfill/refresh is separate from asset-only mode so it can
+# pull ^MOVE from Yahoo and VIX/GVZ/OVX from FRED without running all ALFRED series.
+"${PYTHON[@]}" "$ROOT/data_retrieval.py" --volatility-only
