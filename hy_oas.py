@@ -152,9 +152,11 @@ def latest_observation(cur) -> date | None:
         SELECT max(d.reference_date)
         FROM eco.release_data d
         JOIN eco.release_content c USING (release_name, series_name)
-        WHERE c.fred_series_id = %s AND d.value IS NOT NULL
+        WHERE c.fred_series_id = %s
+          AND d.release_name = %s AND d.series_name = %s
+          AND d.value IS NOT NULL
         """,
-        (SERIES_ID,),
+        (SERIES_ID, RELEASE_NAME, SERIES_NAME),
     )
     return cur.fetchone()[0]
 

@@ -899,6 +899,12 @@ def save_eco_from_fred_to_db(
     if missing:
         raise ValueError(f"save_eco_from_fred_to_db: missing required columns: {sorted(missing)}")
 
+    # The dedicated HY OAS loader owns this FRED ID and its release-date
+    # provenance. The generic ALFRED writer previously created a second
+    # series_name for the same observations and overwrote shared schedule rows.
+    if (df["fred_series_id"] == "BAMLH0A0HYM2").any():
+        raise ValueError("BAMLH0A0HYM2 must be loaded with hy_oas.py, not the generic ALFRED writer")
+
     # Ensure metadata exists (release_content)
     meta_rows = (
         df[["release_name", "series_name", "fred_series_id"]]
