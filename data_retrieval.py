@@ -26,10 +26,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 # Load API key from .env
 load_dotenv()
-TIINGO_API_KEY = os.environ['TIINGO_API_KEY']
+TIINGO_API_KEY = os.environ.get('TIINGO_API_KEY')
 
 # Initialize Tiingo Client
-ti_client = TiingoClient({'session': True, 'api_key': TIINGO_API_KEY})
+ti_client = TiingoClient({'session': True, 'api_key': TIINGO_API_KEY}) if TIINGO_API_KEY else None
 
 TIINGO_CRYPTO_URL='https://api.tiingo.com/tiingo/crypto/prices'
 
@@ -82,6 +82,8 @@ def save_equity_metadata(symbol: str):
     """
     Upsert metadata; never raise on 404. Return a dict with what we saved.
     """
+    if ti_client is None:
+        raise RuntimeError("TIINGO_API_KEY is required for Tiingo equity metadata")
     try:
         meta = ti_client.get_ticker_metadata(symbol)  # Tiingo
         if not meta:
@@ -258,6 +260,8 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_clos
     price_provider = price_provider or os.environ.get("MARKET_DATA_PRICE_PROVIDER", "tiingo")
     if price_provider not in {"tiingo", "yfinance"}:
         raise ValueError(f"Unknown equity price provider: {price_provider}")
+    if price_provider == "tiingo" and ti_client is None:
+        raise RuntimeError("TIINGO_API_KEY is required for Tiingo equity prices")
 
     # ---------------------------
     # Path A: Tiingo first
@@ -1009,16 +1013,15 @@ def save_eco_from_fred_to_db(
         .to_dict("records")
     )
     for m in meta_rows:
-        if not check_eco_metadata_exists(m["series_name"]):
-            rid = int(df["release_id"].min())
-            save_eco_metadata(
-                release_id=rid,
-                release_name=m["release_name"],
-                series_name=m["series_name"],
-                fred_series_id=m["fred_series_id"],
-                source=source,
-                country_code=country_code,
-            )
+        rid = int(df["release_id"].min())
+        save_eco_metadata(
+            release_id=rid,
+            release_name=m["release_name"],
+            series_name=m["series_name"],
+            fred_series_id=m["fred_series_id"],
+            source=source,
+            country_code=country_code,
+        )
 
     with get_connection(config()) as (conn, cur):
         for _, row in df.iterrows():
@@ -1058,6 +1061,54 @@ def save_eco_from_fred_to_db(
             )
 
         conn.commit()
+
+
+def resolve_eco_series(series_filter, series_file=None):
+    """Resolve selected FRED IDs, or names from an optional YAML catalog."""
+    wanted = list(dict.fromkeys(
+        item.strip() for item in (series_filter or "").split(",") if item.strip()))
+    catalog = Path(series_file) if series_file else Path(__file__).with_name("macro_series.yaml")
+    if series_file and not catalog.is_file():
+        raise click.UsageError(f"Eco series file not found: {catalog}")
+    if catalog.is_file():
+        with catalog.open() as handle:
+            groups = yaml.safe_load(handle)
+        if not isinstance(groups, dict):
+            raise click.UsageError(f"Eco series file must contain YAML groups: {catalog}")
+        rows = []
+        for group in groups.values():
+            if not isinstance(group, list):
+                raise click.UsageError(f"Eco series groups must be lists: {catalog}")
+            for item in group:
+                if not isinstance(item, dict) or not all(
+                    isinstance(item.get(key), str) and item[key].strip()
+                    for key in ("fred_series_id", "series_name", "release_name")
+                ):
+                    raise click.UsageError(f"Invalid eco series definition in {catalog}")
+                rows.append((item["fred_series_id"], item["series_name"], item["release_name"]))
+        rows = list(dict.fromkeys(rows))
+        names_by_id = {}
+        for fred_id, series_name, release_name in rows:
+            identity = (series_name, release_name)
+            if fred_id in names_by_id and names_by_id[fred_id] != identity:
+                raise click.UsageError(f"Conflicting names for FRED ID {fred_id} in {catalog}")
+            names_by_id[fred_id] = identity
+        if wanted:
+            missing = set(wanted) - {row[0] for row in rows}
+            if missing:
+                raise click.UsageError(f"FRED IDs not in {catalog}: {sorted(missing)}")
+            rows = [row for row in rows if row[0] in wanted]
+    elif wanted:
+        rows = [(fred_id, fred_id, fred_id) for fred_id in wanted]
+    else:
+        raise click.UsageError(
+            "No macro_series.yaml found; specify --eco-series FRED_ID[,FRED_ID...] "
+            "or --eco-series-file PATH")
+    if not rows:
+        raise click.UsageError("No eco series selected")
+    if any(row[0] == "BAMLH0A0HYM2" for row in rows):
+        raise click.UsageError("BAMLH0A0HYM2 must be loaded with hy_oas.py")
+    return rows
 
 
 ETF_SETTLEMENT_DELAY = timedelta(minutes=30)
@@ -1241,11 +1292,13 @@ def audit_required_etf_closes(policy, *, attempts=3, delay_seconds=60,
 # derive that name from --eco-series shadowed the CLI value with a list, and the
 # filter below died on list.split(). Named apart so the two cannot collide.
 @click.option('--eco-series', 'eco_series_filter', default=None,
-              help="Comma-separated fred_series_id list to refresh, filtered "
-                   "from macro_series.yaml. Default: every series in the file.")
+              help="Comma-separated FRED IDs. Without a series YAML, each ID is stored "
+                   "as its own release and series name.")
+@click.option('--eco-series-file', default=None, type=click.Path(dir_okay=False),
+              help="Optional YAML catalog mapping FRED IDs to release/series names.")
 def main(assets_file, etf_close_check, repair_missing, full_history, attempts,
          delay_seconds, treasury_only, volatility_only, eco_only, assets_only,
-         eco_series_filter, price_provider, skip_current, current_through):
+         eco_series_filter, eco_series_file, price_provider, skip_current, current_through):
     """Refresh market and macro data into coredata.
 
     The full run touches every asset in macro_assets.yaml plus all ~84 FRED
@@ -1256,7 +1309,7 @@ def main(assets_file, etf_close_check, repair_missing, full_history, attempts,
     definition of what exists; these flags only narrow what runs.
     """
     if etf_close_check:
-        if treasury_only or volatility_only or eco_only or assets_only or eco_series_filter or skip_current or current_through:
+        if treasury_only or volatility_only or eco_only or assets_only or eco_series_filter or eco_series_file or skip_current or current_through:
             raise click.UsageError("--etf-close-check cannot be combined with other retrieval modes")
         policy = load_etf_close_policy(assets_file)
         if repair_missing:
@@ -1269,13 +1322,13 @@ def main(assets_file, etf_close_check, repair_missing, full_history, attempts,
     if repair_missing or full_history:
         raise click.UsageError("--repair-missing and --full-history require --etf-close-check")
     if treasury_only:
-        if volatility_only or eco_only or assets_only or eco_series_filter or skip_current:
+        if volatility_only or eco_only or assets_only or eco_series_filter or eco_series_file or skip_current:
             raise click.UsageError("--treasury-only cannot be combined with other retrieval modes")
         refresh_treasury_cmt()
         logging.info("✅ Treasury CMT refresh complete.")
         return
     if volatility_only:
-        if eco_only or assets_only or eco_series_filter or skip_current:
+        if eco_only or assets_only or eco_series_filter or eco_series_file or skip_current:
             raise click.UsageError("--volatility-only cannot be combined with other retrieval modes")
         refresh_volatility_indices()
         logging.info("✅ Volatility index refresh complete.")
@@ -1283,15 +1336,26 @@ def main(assets_file, etf_close_check, repair_missing, full_history, attempts,
     if eco_only and assets_only:
         raise click.UsageError("--eco-only and --assets-only are mutually "
                                "exclusive; passing both would skip everything.")
+    if assets_only and (eco_series_filter or eco_series_file):
+        raise click.UsageError("--assets-only cannot be combined with eco series selection")
     if skip_current and not current_through:
         raise click.UsageError("--skip-current requires --current-through YYYY-MM-DD")
     current_through_date = pd.Timestamp(current_through).date() if current_through else None
 
+    eco_series_deduped = []
+    if not assets_only:
+        if not os.environ.get("FRED_API_KEY"):
+            raise click.UsageError("FRED_API_KEY is required for economic releases")
+        eco_series_deduped = resolve_eco_series(eco_series_filter, eco_series_file)
+
     os.environ["MARKET_DATA_PRICE_PROVIDER"] = price_provider
 
-    logging.info(f"🔹 Loading assets from {assets_file}...")
-    with open(assets_file, "r") as f:
-        assets = yaml.load(f, Loader=yaml.BaseLoader)  # all scalars as strings
+    if eco_only:
+        assets = {}
+    else:
+        logging.info(f"🔹 Loading assets from {assets_file}...")
+        with open(assets_file, "r") as f:
+            assets = yaml.load(f, Loader=yaml.BaseLoader)  # all scalars as strings
     # A symbol is one provider request per run. Preserve input order while
     # preventing duplicate YAML entries from causing duplicate requests.
     equity_symbols = list(dict.fromkeys(map(str, assets.get("equities", []))))
@@ -1374,32 +1438,7 @@ def main(assets_file, etf_close_check, repair_missing, full_history, attempts,
         return
 
     logging.info("🔹 Updating Economic Releases from FRED/ALFRED (with true release dates)...")
-    macro_series_file = os.path.join(os.path.dirname(__file__), "macro_series.yaml")
-    with open(macro_series_file) as _f:
-        _macro_cfg = yaml.safe_load(_f)
-    eco_series = [
-        (s["fred_series_id"], s["series_name"], s["release_name"])
-        for group in _macro_cfg.values()
-        for s in group
-    ]
-    # Deduplicate: same (fred_series_id, series_name) may appear in multiple groups
-    seen = set()
-    eco_series_deduped = []
-    for item in eco_series:
-        key = (item[0], item[1])
-        if key not in seen:
-            seen.add(key)
-            eco_series_deduped.append(item)
-
-    if eco_series_filter:
-        wanted = {x.strip() for x in eco_series_filter.split(",") if x.strip()}
-        before = len(eco_series_deduped)
-        eco_series_deduped = [t for t in eco_series_deduped if t[0] in wanted]
-        missing = wanted - {t[0] for t in eco_series_deduped}
-        logging.info(f"--eco-series: {len(eco_series_deduped)} of {before} selected")
-        if missing:
-            logging.warning(f"not found in macro_series.yaml: {sorted(missing)}")
-
+    failed = []
     for fred_series_id, series_name, release_name in eco_series_deduped:
         try:
             logging.info(f"Fetching {series_name} ({fred_series_id}) vintages via ALFRED...")
@@ -1410,12 +1449,15 @@ def main(assets_file, etf_close_check, repair_missing, full_history, attempts,
                 release_name=release_name,
             )
             if df_eco.empty:
-                logging.info(f"No data returned for {fred_series_id}.")
-                continue
+                raise RuntimeError(f"No data returned for {fred_series_id}")
             save_eco_from_fred_to_db(df_eco, source="FRED/ALFRED", country_code="USA")
             logging.info(f"Upserted {len(df_eco)} rows for {series_name}.")
         except Exception as e:
-            logging.error(f"Failed updating {fred_series_id}: {e}")
+            logging.exception("Failed updating %s: %s", fred_series_id, e)
+            failed.append(fred_series_id)
+
+    if failed:
+        raise click.ClickException(f"Economic release load failed for: {', '.join(failed)}")
 
     logging.info("✅ Data retrieval and storage complete.")
 
