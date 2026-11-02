@@ -228,6 +228,30 @@ FROM market_indices.constituents_asof('NDX')
 ORDER BY symbol;
 ```
 
+### `eco` schema setup and migrations
+
+The schema definitions are versioned SQL, not embedded in data loaders. Apply
+them in this order to a fresh `coredata` database:
+
+```bash
+psql -v ON_ERROR_STOP=1 -d coredata -f create_eco_data_tables.sql
+psql -v ON_ERROR_STOP=1 -d coredata -f create_imf_gold_tables.sql
+psql -v ON_ERROR_STOP=1 -d coredata -f create_eco_release_data_pit_cache.sql
+psql -v ON_ERROR_STOP=1 -d coredata -f create_eco_release_data_unified_view.sql
+psql -v ON_ERROR_STOP=1 -d coredata -c 'REFRESH MATERIALIZED VIEW eco._release_data_pit_cache'
+```
+
+Use your configured PostgreSQL connection options if local peer authentication
+is not available. The first two table scripts and cache indexes are rerunnable;
+the view script replaces its definition without dropping underlying data. On an
+existing database, `create_eco_data_tables.sql` adds older missing
+`release_schedule` columns. Run the scripts before running any release loader.
+After the initial cache population, subsequent updates can use
+`REFRESH MATERIALIZED VIEW CONCURRENTLY eco._release_data_pit_cache`.
+Run `verify_eco_schema.sh` with the same PostgreSQL connection settings to
+rebuild all definitions in a rollback-only probe and compare tables, columns,
+constraints, indexes, and views against the live `eco` schema.
+
 ### FRED high-yield OAS
 
 `hy_oas.py` stores FRED series `BAMLH0A0HYM2` in the existing
