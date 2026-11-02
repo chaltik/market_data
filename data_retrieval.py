@@ -1,4 +1,7 @@
 import os
+import time
+from pathlib import Path
+from zoneinfo import ZoneInfo
 import yaml
 import click
 import pandas as pd
@@ -7,7 +10,7 @@ from pandas.tseries.holiday import USFederalHolidayCalendar
 from pandas.tseries.offsets import CustomBusinessDay
 import pandas_market_calendars as mcal
 import logging
-from datetime import timedelta, datetime as dtm
+from datetime import timedelta, datetime as dtm, timezone
 from dotenv import load_dotenv
 from tiingo import TiingoClient
 from tiingo.restclient import RestClientError
@@ -331,7 +334,9 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_clos
     if end_date is not None:
         # yfinance treats `end` as exclusive; the importer treats it as inclusive.
         history_kwargs["end"] = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    px = yf.Ticker(symbol).history(**history_kwargs)
+    # Yahoo uses a hyphen for share classes stored with a dot in our DB
+    # (for example BRK.B -> BRK-B). Keep the DB symbol unchanged below.
+    px = yf.Ticker(symbol.replace('.', '-')).history(**history_kwargs)
 
     if px.empty:
         # nothing we can do
@@ -499,6 +504,81 @@ def fetch_vix_from_FRED():
     fred_api = Fred(api_key=os.environ['FRED_API_KEY'])
     return fred_api.get_series("VIXCLS").dropna()
 
+
+def fetch_fred_index_from_FRED(series_id: str) -> pd.Series:
+    """Fetch a daily FRED volatility-index series (e.g. GVZCLS or OVXCLS)."""
+    fred_api = Fred(api_key=os.environ["FRED_API_KEY"])
+    return fred_api.get_series(series_id).dropna()
+
+
+def fetch_move_from_yahoo(start_date: str) -> pd.Series:
+    """Fetch the Yahoo Finance daily close history for the ICE BofA MOVE index."""
+    history = yf.Ticker("^MOVE").history(
+        start=start_date, auto_adjust=False, actions=False
+    )
+    if history.empty or "Close" not in history.columns:
+        raise RuntimeError("Yahoo Finance returned no daily close history for ^MOVE")
+    return pd.to_numeric(history["Close"], errors="coerce").dropna()
+
+
+def save_volatility_index_to_db(series: pd.Series, index_symbol: str,
+                                source: str, source_series_id: str):
+    if series.empty:
+        return
+    df = series.reset_index()
+    df.columns = ["date", "value"]
+    df = df.dropna(subset=["date", "value"])
+    dates = pd.to_datetime(df["date"])
+    if dates.dt.tz is not None:
+        dates = dates.dt.tz_localize(None)
+    df["date"] = dates.dt.date
+    with get_connection(config()) as (conn, cur):
+        for _, row in df.iterrows():
+            cur.execute("""
+                INSERT INTO market_indices.volatility_indices
+                    (date, index_symbol, value, source, source_series_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (date, index_symbol) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    source = EXCLUDED.source,
+                    source_series_id = EXCLUDED.source_series_id;
+            """, (row["date"], index_symbol, round(float(row["value"]), 2),
+                  source, source_series_id))
+        conn.commit()
+
+
+def refresh_volatility_indices():
+    """Backfill/update VIX, MOVE, GVZ, and OVX in market_indices."""
+    for index_symbol, series_id in (
+        ("VIX", "VIXCLS"),
+        ("GVZ", "GVZCLS"),
+        ("OVX", "OVXCLS"),
+    ):
+        latest = run_sql(
+            "SELECT MAX(date) FROM market_indices.volatility_indices WHERE index_symbol = %s",
+            config(), (index_symbol,),
+        ).iloc[0, 0]
+        series = fetch_fred_index_from_FRED(series_id)
+        if latest is not None:
+            # Re-fetch the last stored date too, so provider revisions are upserted.
+            series = series[series.index >= pd.Timestamp(latest)]
+        save_volatility_index_to_db(series, index_symbol, "FRED", series_id)
+        logging.info("Stored %d %s observations through %s.",
+                     len(series), series_id, series.index.max() if not series.empty else None)
+
+    latest_move = run_sql(
+        "SELECT MAX(date) FROM market_indices.volatility_indices WHERE index_symbol = %s",
+        config(), ("MOVE",),
+    ).iloc[0, 0]
+    start_date = (
+        pd.Timestamp(latest_move).strftime("%Y-%m-%d")
+        if latest_move is not None else "1980-01-01"
+    )
+    move = fetch_move_from_yahoo(start_date)
+    save_volatility_index_to_db(move, "MOVE", "Yahoo Finance", "^MOVE")
+    logging.info("Stored %d ^MOVE observations through %s.",
+                 len(move), move.index.max() if not move.empty else None)
+
 def download_treasury_yield_curve(yyyy, n_latest=7):
     csv_url_yyyy = f'https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{yyyy}/all?type=daily_treasury_yield_curve&field_tdr_date_value={yyyy}&page&_format=csv'
     df = pd.read_csv(csv_url_yyyy, nrows=n_latest, index_col=0, parse_dates=True)
@@ -626,6 +706,23 @@ def save_treasury_cmt(df):
             """, (row["Date"].date(), row["Tenor"], round(float(row["Rate"]), 2)))
         conn.commit()
     logging.info(f"Saved {len(df_long)} UST entries")
+
+def refresh_treasury_cmt():
+    """Incrementally load Treasury's own daily par-yield CSV into coredata."""
+    cmt_latest = get_latest_date("interest_rates.treasury_cmt", date_col="date")
+    logging.info("Latest Treasury CMT date stored: %s", cmt_latest)
+    today = pd.Timestamp.today().date()
+    years = range((cmt_latest.year if cmt_latest else 2000), today.year + 1)
+    for year in years:
+        df = download_treasury_yield_curve(year, n_latest=999)
+        if df.empty:
+            raise RuntimeError(f"Treasury CSV for {year} returned no rows")
+        df = df.rename(columns=lambda column: column.strip())
+        if cmt_latest:
+            df = df[df.index > pd.to_datetime(cmt_latest)]
+        logging.info("Treasury %s: %d new dates", year, len(df))
+        if not df.empty:
+            save_treasury_cmt(df)
 
 def save_index_to_db(series: pd.Series, table: str):
     if series.empty:
@@ -963,9 +1060,167 @@ def save_eco_from_fred_to_db(
         conn.commit()
 
 
+ETF_SETTLEMENT_DELAY = timedelta(minutes=30)
+
+
+def load_etf_close_policy(assets_file):
+    """Read the exact required ETF universe and history rules from one YAML."""
+    with Path(assets_file).open() as handle:
+        assets = yaml.safe_load(handle) or {}
+    symbols = assets.get("equities")
+    rules = assets.get("etf_close_policy")
+    if not isinstance(symbols, list) or not symbols or not isinstance(rules, dict):
+        raise ValueError("ETF close check requires equities and etf_close_policy in --assets_file")
+    if any(not isinstance(symbol, str) or not symbol or symbol != symbol.upper()
+           for symbol in symbols) or len(symbols) != len(set(symbols)):
+        raise ValueError("ETF close symbols must be unique uppercase strings")
+    full_minimum = rules.get("full_history_min_rows", {})
+    if not isinstance(full_minimum, dict) or not set(full_minimum) <= set(symbols):
+        raise ValueError("full_history_min_rows must map only listed ETF symbols")
+    for value in (*full_minimum.values(), rules.get("default_full_history_min_rows"),
+                  rules.get("min_recent_history_rows"), rules.get("recent_history_days")):
+        if type(value) is not int or value < 1:
+            raise ValueError("ETF history thresholds must be positive integers")
+    return {"symbols": tuple(symbols), "full_history_min_rows": full_minimum,
+            "default_full_history_min_rows": rules["default_full_history_min_rows"],
+            "min_recent_history_rows": rules["min_recent_history_rows"],
+            "recent_history_days": rules["recent_history_days"]}
+
+
+def latest_completed_etf_close(now=None):
+    """Most recent NYSE close at least 30 minutes old; never accept a partial bar."""
+    now = pd.Timestamp(now if now is not None else dtm.now(timezone.utc))
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    ny_date = now.tz_convert("America/New_York").date()
+    schedule = mcal.get_calendar("NYSE").schedule(
+        start_date=ny_date - timedelta(days=14), end_date=ny_date)
+    completed = schedule[schedule["market_close"] <= now - ETF_SETTLEMENT_DELAY]
+    if completed.empty:
+        raise RuntimeError("No completed NYSE session found in the last 14 days")
+    return completed["market_close"].iloc[-1]
+
+
+def stored_completed_etf_bar(symbol, close_ts):
+    with get_connection(config()) as (_, cur):
+        cur.execute(
+            """SELECT close, adj_close FROM price_data.equities_us_daily
+               WHERE symbol = %s AND ts = %s""", (symbol, close_ts.to_pydatetime()))
+        row = cur.fetchone()
+    return bool(row and row["close"] is not None and row["adj_close"] is not None
+                and row["close"] > 0 and row["adj_close"] > 0)
+
+
+def check_etf_history_coverage(symbol, frame):
+    """Reject a partial full-history Tiingo response before it overwrites bars."""
+    source_dates = set(pd.to_datetime(frame["ts"]).dt.tz_convert("America/New_York").dt.date)
+    with get_connection(config()) as (_, cur):
+        cur.execute(
+            """SELECT (ts AT TIME ZONE 'America/New_York')::date AS trade_date
+               FROM price_data.equities_us_daily WHERE symbol = %s""", (symbol,))
+        old_dates = {row["trade_date"] for row in cur.fetchall()}
+    missing = old_dates - source_dates
+    if missing:
+        raise RuntimeError(f"Tiingo history for {symbol} omits {len(missing)} existing dates")
+
+
+def refresh_completed_etf_bar(symbol, close_ts, policy, *, full_history=False):
+    """Strict Tiingo refresh with exact-session, coverage and persistence checks."""
+    session_date = close_ts.tz_convert("America/New_York").date()
+    full_history = full_history or symbol in policy["full_history_min_rows"]
+    start_date = ("2000-01-01" if full_history else
+                  (session_date - timedelta(days=policy["recent_history_days"])).isoformat())
+    frame = fetch_equity_prices(symbol, start_date=start_date,
+                                end_date=session_date.isoformat(),
+                                require_adj_close=True, price_provider="tiingo",
+                                strict_provider=True)
+    if frame.empty:
+        logging.warning("%s: Tiingo returned no completed %s bar", symbol, session_date)
+        return False
+    matches = frame[pd.to_datetime(frame["ts"], utc=True) == close_ts.tz_convert("UTC")]
+    if len(matches) != 1:
+        logging.warning("%s: Tiingo returned %d bars, none uniquely matches %s",
+                        symbol, len(frame), close_ts)
+        return False
+    minimum = (policy["full_history_min_rows"].get(
+        symbol, policy["default_full_history_min_rows"]) if full_history
+        else policy["min_recent_history_rows"])
+    if len(frame) < minimum or frame["ts"].duplicated().any():
+        raise RuntimeError(f"Suspicious Tiingo history for {symbol}: {len(frame)} rows")
+    if (frame["adj_close"].isna().any() or (frame["adj_close"] <= 0).any()
+            or frame["close"].isna().any() or (frame["close"] <= 0).any()):
+        raise RuntimeError(f"Tiingo price history incomplete for {symbol}")
+    if full_history:
+        check_etf_history_coverage(symbol, frame)
+    save_equity_prices_bulk(frame)
+    if not stored_completed_etf_bar(symbol, close_ts):
+        logging.error("%s: %s close did not persist", symbol, session_date)
+        return False
+    row = matches.iloc[0]
+    logging.info("Verified %s %s via Tiingo: raw close=%s adjusted close=%s",
+                 symbol, session_date, row["close"], row["adj_close"])
+    return True
+
+
+def verify_required_etf_closes(symbols, policy, *, attempts=3, delay_seconds=60,
+                               now=None, refresh=None, sleep=time.sleep,
+                               full_history=False):
+    close_ts = latest_completed_etf_close(now)
+    refresh = refresh or (lambda symbol, close: refresh_completed_etf_bar(
+        symbol, close, policy,
+        full_history=full_history or dtm.now(ZoneInfo("America/Los_Angeles")).weekday() == 6))
+    pending = set(symbols)
+    for attempt in range(1, attempts + 1):
+        for symbol in sorted(pending):
+            try:
+                if refresh(symbol, close_ts):
+                    pending.remove(symbol)
+            except Exception:
+                logging.exception("%s refresh attempt %d failed", symbol, attempt)
+        if not pending:
+            return close_ts
+        if attempt < attempts:
+            logging.warning("Missing completed ETF bars %s; retrying in %s seconds",
+                            sorted(pending), delay_seconds)
+            sleep(delay_seconds)
+    raise RuntimeError(f"Required ETF bars missing for {close_ts}: {sorted(pending)}")
+
+
+def audit_required_etf_closes(policy, *, attempts=3, delay_seconds=60,
+                              now=None, stored=stored_completed_etf_bar,
+                              refresh=None, sleep=time.sleep, full_history=False):
+    """Independently rerun only missing symbols, then verify every required ETF."""
+    close_ts = latest_completed_etf_close(now)
+    missing = [symbol for symbol in policy["symbols"] if not stored(symbol, close_ts)]
+    if missing:
+        logging.warning("Missing %s ETF closes for %s: %s; rerunning Tiingo",
+                        len(missing), close_ts, missing)
+        verify_required_etf_closes(missing, policy, attempts=attempts,
+                                   delay_seconds=delay_seconds, now=now,
+                                   refresh=refresh, sleep=sleep, full_history=full_history)
+    remaining = [symbol for symbol in policy["symbols"] if not stored(symbol, close_ts)]
+    if remaining:
+        raise RuntimeError(f"ETF audit failed after rerun for {close_ts}: {remaining}")
+    logging.info("ETF audit passed for %s: %s required closes present",
+                 close_ts, len(policy["symbols"]))
+    return close_ts
+
+
 ### ✅ Main ###
 @click.command()
 @click.option('--assets_file', default="macro_assets.yaml", help="Path to assets YAML file.")
+@click.option('--etf-close-check', is_flag=True, default=False,
+              help="Strict Tiingo refresh of required ETF closes listed in --assets_file.")
+@click.option('--repair-missing', is_flag=True, default=False,
+              help="With --etf-close-check, rerun only missing completed ETF closes.")
+@click.option('--full-history', is_flag=True, default=False,
+              help="With --etf-close-check, rebuild selected ETF history.")
+@click.option('--attempts', type=click.IntRange(min=1), default=3, show_default=True)
+@click.option('--delay-seconds', type=click.IntRange(min=0), default=60, show_default=True)
+@click.option('--treasury-only', is_flag=True, default=False,
+              help="Refresh only Treasury CMT rates from the Treasury CSV; skip all other sources.")
+@click.option('--volatility-only', is_flag=True, default=False,
+              help="Refresh VIX, MOVE, GVZ, and OVX index histories only.")
 @click.option('--eco-only', is_flag=True, default=False,
               help="Skip equities/crypto/VIX/CMT/GSCPI; refresh only the FRED "
                    "economic series. Use with --eco-series to target a few.")
@@ -988,8 +1243,9 @@ def save_eco_from_fred_to_db(
 @click.option('--eco-series', 'eco_series_filter', default=None,
               help="Comma-separated fred_series_id list to refresh, filtered "
                    "from macro_series.yaml. Default: every series in the file.")
-def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
-         skip_current, current_through):
+def main(assets_file, etf_close_check, repair_missing, full_history, attempts,
+         delay_seconds, treasury_only, volatility_only, eco_only, assets_only,
+         eco_series_filter, price_provider, skip_current, current_through):
     """Refresh market and macro data into coredata.
 
     The full run touches every asset in macro_assets.yaml plus all ~84 FRED
@@ -999,6 +1255,31 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
     re-pulling everything else to get at them. The YAML stays the single
     definition of what exists; these flags only narrow what runs.
     """
+    if etf_close_check:
+        if treasury_only or volatility_only or eco_only or assets_only or eco_series_filter or skip_current or current_through:
+            raise click.UsageError("--etf-close-check cannot be combined with other retrieval modes")
+        policy = load_etf_close_policy(assets_file)
+        if repair_missing:
+            audit_required_etf_closes(policy, attempts=attempts,
+                                      delay_seconds=delay_seconds, full_history=full_history)
+        else:
+            verify_required_etf_closes(policy["symbols"], policy, attempts=attempts,
+                                       delay_seconds=delay_seconds, full_history=full_history)
+        return
+    if repair_missing or full_history:
+        raise click.UsageError("--repair-missing and --full-history require --etf-close-check")
+    if treasury_only:
+        if volatility_only or eco_only or assets_only or eco_series_filter or skip_current:
+            raise click.UsageError("--treasury-only cannot be combined with other retrieval modes")
+        refresh_treasury_cmt()
+        logging.info("✅ Treasury CMT refresh complete.")
+        return
+    if volatility_only:
+        if eco_only or assets_only or eco_series_filter or skip_current:
+            raise click.UsageError("--volatility-only cannot be combined with other retrieval modes")
+        refresh_volatility_indices()
+        logging.info("✅ Volatility index refresh complete.")
+        return
     if eco_only and assets_only:
         raise click.UsageError("--eco-only and --assets-only are mutually "
                                "exclusive; passing both would skip everything.")
@@ -1059,31 +1340,11 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
     # flags must skip the work, not just its log lines, so a targeted price
     # update cannot fail on an unrelated data source.
     if not eco_only and not assets_only:
-        logging.info("🔹 Updating VIX...")
-        vix_latest = pd.to_datetime(get_latest_date("market_indices.vix"))
-        vix_series = fetch_vix_from_FRED()
-        if vix_latest:
-            vix_series = vix_series[vix_series.index > vix_latest]
-        save_index_to_db(vix_series, "market_indices.vix")
-        logging.info(f"Stored {len(vix_series)} new VIX entries.")
+        logging.info("🔹 Updating volatility indices...")
+        refresh_volatility_indices()
 
         logging.info("🔹 Updating Treasury CMT...")
-        cmt_latest = get_latest_date("interest_rates.treasury_cmt", date_col="date")
-        logging.info(f'Latest cmt data stored is for {cmt_latest}')
-        today = pd.Timestamp.today().date()
-        years = list(range((cmt_latest.year if cmt_latest else 2000), today.year + 1))
-        for y in years:
-            logging.info(f'getting UST history for {y}')
-            df = download_treasury_yield_curve(y, n_latest=999)
-            logging.info(f'{df.shape[0]} rows downloaded')
-            df = df.rename(columns=lambda x: x.strip())
-            # df = df.rename(columns={df.columns[0]: "Date"})
-            # df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-            # df = df.dropna(subset=["Date"])
-            if cmt_latest:
-                df = df[df.index > pd.to_datetime(cmt_latest)]
-                logging.info(f'{df.shape[0]} rows needs to be saved')
-            save_treasury_cmt(df)
+        refresh_treasury_cmt()
 
         logging.info("🔹 Updating GSCPI...")
         gscpi_series = download_gscpi()
@@ -1156,7 +1417,7 @@ def main(assets_file, eco_only, assets_only, eco_series_filter, price_provider,
         except Exception as e:
             logging.error(f"Failed updating {fred_series_id}: {e}")
 
-logging.info("✅ Data retrieval and storage complete.")
+    logging.info("✅ Data retrieval and storage complete.")
 
 if __name__ == "__main__":
     main()

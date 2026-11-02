@@ -12,16 +12,12 @@ import argparse
 import hashlib
 import urllib.request
 import re
-import sys
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
 from psycopg2.extras import Json, execute_values
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
 
 from db_config import config
 from db_utils import get_connection

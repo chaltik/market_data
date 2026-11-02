@@ -7,5 +7,6 @@
 *.yml
 !*.example.yaml
 !*.example.yml
+!required_etf_assets.yaml
 __pycache__/
 logs/
