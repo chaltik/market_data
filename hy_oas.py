@@ -129,23 +129,6 @@ def fetch_fred(start: date, api_key: str) -> list[tuple[date, Decimal, date | No
             in sorted(observations.items())]
 
 
-def ensure_provenance_columns(cur) -> None:
-    # Production's eco schema predates this change; the migration is safe to
-    # run repeatedly and does not alter existing release dates.
-    cur.execute(
-        "ALTER TABLE eco.release_schedule "
-        "ADD COLUMN IF NOT EXISTS release_date_source TEXT"
-    )
-    cur.execute(
-        "ALTER TABLE eco.release_schedule "
-        "ADD COLUMN IF NOT EXISTS release_date_verified BOOLEAN NOT NULL DEFAULT FALSE"
-    )
-    cur.execute(
-        "ALTER TABLE eco.release_schedule "
-        "ADD COLUMN IF NOT EXISTS first_fetched_at TIMESTAMPTZ"
-    )
-
-
 def latest_observation(cur) -> date | None:
     cur.execute(
         """
@@ -170,7 +153,6 @@ def store(
 ) -> int:
     if not observations:
         return 0
-    ensure_provenance_columns(cur)
     cur.execute(
         """
         INSERT INTO eco.release_content

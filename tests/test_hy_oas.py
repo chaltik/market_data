@@ -67,6 +67,10 @@ class HyOasTest(unittest.TestCase):
         fetched_at = datetime(2026, 2, 10, 1, 0, tzinfo=timezone.utc)
         archive = RecordingCursor()
         store(archive, observations, source=ARCHIVE_SOURCE, fetched_at=fetched_at)
+        self.assertFalse(any(
+            sql.lstrip().upper().startswith(("ALTER ", "CREATE ", "DROP "))
+            for sql, _ in archive.statements
+        ))
         fresh = RecordingCursor()
         store(fresh, observations, source=FRED_SOURCE, fetched_at=fetched_at)
 
