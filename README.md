@@ -45,15 +45,16 @@ Use `main` for ongoing development; feature branches are unnecessary unless requ
 Provide Required Config Files
 Ensure the following files exist in the project root:
 
-✅ .env (API Key)
-Create a file named .env and add:
+✅ .env (API keys)
+Create a file named .env and add the keys for the sources you use:
 ```
 TIINGO_API_KEY=my_tiingo_api_key
+FRED_API_KEY=my_fred_api_key
 ```
 ✅ database.ini (PostgreSQL Connection)
 Create a file named database.ini with:
 ```
-[postgresql]
+[coredata]
 host=your_db_host
 database=your_db_name
 user=your_db_user
@@ -63,16 +64,16 @@ port=your_db_port
 🚀 Running the Script
 Use the following command to run data_retrieval.py:
 
-`eval $(cat .env) PYTHONPATH=. python data_retrieval.py`
+`python data_retrieval.py --assets_file=my_assets.yaml --assets-only`
 
 Or specify a custom asset file:
 
-`eval $(cat .env) PYTHONPATH=. python data_retrieval.py --assets_file=my_assets.yaml`
+`python data_retrieval.py --assets_file=my_assets.yaml --assets-only`
 
 ⚙ Automating with Cron Job
 To schedule daily updates, add this line to crontab -e:
 
-`0 0 * * * cd /path/to/market_data && eval $(cat .env) PYTHONPATH=. python data_retrieval.py`
+`0 0 * * * cd /path/to/market_data && python data_retrieval.py --assets_file=my_assets.yaml --assets-only`
 
 ### **New!**
 
@@ -251,6 +252,44 @@ After the initial cache population, subsequent updates can use
 Run `verify_eco_schema.sh` with the same PostgreSQL connection settings to
 rebuild all definitions in a rollback-only probe and compare tables, columns,
 constraints, indexes, and views against the live `eco` schema.
+
+### Load a few FRED economic releases on a fresh machine
+
+Install the Python dependencies from `requirements.txt`, create `database.ini`
+with a `[coredata]` section, and put **only** `FRED_API_KEY` in `.env`. The
+`--eco-only` path does not need Tiingo, an asset YAML, or the optional
+`macro_series.yaml`. Create the eco tables with the SQL commands above, then:
+
+```bash
+python data_retrieval.py --eco-only --eco-series GDP,CPIAUCSL
+```
+
+Replace those IDs with the FRED tickers you want. Each direct ID becomes the
+`fred_series_id`, `series_name`, and `release_name` in
+`eco.release_content`; its observations are upserted into
+`eco.release_schedule` and `eco.release_data`. Re-running the command updates
+the same keys. A failed or empty series makes the command exit unsuccessfully;
+check the log and row counts rather than assuming a zero exit means data arrived.
+For custom descriptive names, supply `--eco-series-file PATH` pointing to a
+YAML catalog with groups of `fred_series_id`, `series_name`, and `release_name`
+objects. Unknown selected IDs in that catalog are errors. The dedicated
+`hy_oas.py` loader, not this generic command, owns `BAMLH0A0HYM2`.
+
+```sql
+SELECT c.fred_series_id, count(*) AS observations,
+       min(d.reference_date) AS first_reference,
+       max(d.reference_date) AS last_reference
+FROM eco.release_data d
+JOIN eco.release_content c USING (release_name, series_name)
+WHERE c.fred_series_id IN ('GDP', 'CPIAUCSL')
+GROUP BY c.fred_series_id;
+```
+
+The generic loader stores the latest available value for each reference date
+alongside the first ALFRED vintage date (or an explicitly assumed lag for
+non-vintage series). It does **not** preserve every historical vintage in
+`eco.release_data`; do not interpret those latest values as original release
+prints for point-in-time backtests.
 
 ### FRED high-yield OAS
 
