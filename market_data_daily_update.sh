@@ -34,21 +34,22 @@ trap 'rm -f "$ndx_tmpfile" "$sp500_tmpfile" "$combined_tmpfile"' EXIT
 # Merge all scheduled universes before retrieval. The set removes overlap
 # between NDX, S&P 500, and ETF symbols, so each symbol is requested once.
 "${PYTHON[@]}" - "$ndx_tmpfile" "$sp500_tmpfile" \
-  "$ROOT/commodity_etf_assets.yaml" "$combined_tmpfile" <<'PY'
+  "$ROOT/commodity_etf_assets.yaml" "$ROOT/required_etf_assets.yaml" "$combined_tmpfile" <<'PY'
 import sys
 import yaml
 
 symbols = set()
-for path in sys.argv[1:4]:
+for path in sys.argv[1:-2]:
     with open(path) as handle:
         assets = yaml.safe_load(handle) or {}
     symbols.update(str(symbol) for symbol in assets.get("equities", []))
 
 # The required factor and replica ETFs are verified from Tiingo below, never Yahoo.
-from required_etf_daily_check import REQUIRED_SYMBOLS
-symbols.difference_update(REQUIRED_SYMBOLS)
+with open(sys.argv[-2]) as handle:
+    required = yaml.safe_load(handle) or {}
+symbols.difference_update(required.get("equities", []))
 
-with open(sys.argv[4], "w") as handle:
+with open(sys.argv[-1], "w") as handle:
     yaml.safe_dump({"equities": sorted(symbols)}, handle, sort_keys=False)
 PY
 
@@ -63,4 +64,5 @@ PY
 # The broad price pass can receive an older nonempty Yahoo response. Refetch
 # these live-book ETFs and fail the cron if the last completed close is absent.
 # All factor and replica-book ETFs use Tiingo EOD.
-"${PYTHON[@]}" "$ROOT/required_etf_daily_check.py"
+"${PYTHON[@]}" "$ROOT/data_retrieval.py" \
+  --assets_file "$ROOT/required_etf_assets.yaml" --etf-close-check

@@ -27,9 +27,7 @@ import psycopg2
 import psycopg2.extras
 import yfinance as yf
 
-sys.path.insert(0, '/Users/captain/projects/market_data')
-sys.path.insert(0, '/Users/captain/projects/strader')
-from data_loader import config
+from db_config import config
 
 
 # ── Contract specs ────────────────────────────────────────────────────────────

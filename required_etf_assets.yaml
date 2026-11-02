@@ -1,0 +1,39 @@
+# Live factor and replica-book ETFs: strict completed-session Tiingo checks.
+# Keep this list aligned with the live books; the scheduled loader passes this file explicitly.
+equities:
+  - IVV
+  - IVW
+  - IVE
+  - IWM
+  - UWM
+  - GLD
+  - SLV
+  - CPER
+  - PPLT
+  - PALL
+  - USO
+  - BNO
+  - UGA
+  - UNG
+  - CORN
+  - WEAT
+  - SOYB
+  - CANE
+  - SHY
+  - IEI
+  - IEF
+  - TLH
+  - TLT
+  - EDV
+  - BNDX
+  - IBIT
+etf_close_policy:
+  full_history_min_rows:
+    IVV: 6000
+    IVW: 6000
+    IVE: 6000
+    IWM: 6000
+    UWM: 4900
+  default_full_history_min_rows: 500
+  min_recent_history_rows: 10
+  recent_history_days: 35

@@ -1,6 +1,6 @@
 # Monthly U.S. weather data
 
-Run `python weather/backfill_monthly_us_weather.py` for a dry run. Add `--apply`
+Run `python -m weather.backfill_monthly_us_weather` from the repository root for a dry run. Add `--apply`
 to save an immutable source snapshot and its parsed observations to
 `coredata.weather` (the script creates the schema using
 `create_weather_tables.sql`). Re-run the loader after NOAA updates its current
