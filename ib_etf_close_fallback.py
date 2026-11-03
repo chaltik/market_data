@@ -76,7 +76,8 @@ def main():
     ib.TimezoneTWS = os.environ.get("IBKR_TWS_TIMEZONE", "UTC")
     try:
         ib.connect(os.environ.get("IBKR_HOST", "127.0.0.1"), port,
-                   clientId=98, timeout=15, readonly=True)
+                   clientId=int(os.environ.get("IBKR_CLIENT_ID", "98")),
+                   timeout=15, readonly=True)
         for symbol in missing:
             try:
                 frame = fetch_missing_close(ib, symbol, close_ts)
