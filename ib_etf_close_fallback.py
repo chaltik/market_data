@@ -56,9 +56,6 @@ def fetch_missing_close(ib, symbol, close_ts):
 
 
 def main():
-    from ib_async import IB
-    logging.getLogger("ib_async").setLevel(logging.WARNING)
-    logging.getLogger("ib_async.wrapper").setLevel(logging.WARNING)
     if len(sys.argv) != 2:
         raise SystemExit(f"Usage: {sys.argv[0]} REQUIRED_ETF_ASSETS.yaml")
     policy = load_etf_close_policy(sys.argv[1])
@@ -68,6 +65,12 @@ def main():
                 close_ts, len(missing), missing)
     if not missing:
         return
+    try:
+        from ib_async import IB
+    except ImportError as exc:
+        raise SystemExit("IB fallback unavailable: install optional ib_async to repair missing ETF closes") from exc
+    logging.getLogger("ib_async").setLevel(logging.WARNING)
+    logging.getLogger("ib_async.wrapper").setLevel(logging.WARNING)
     port = int(os.environ.get("IBKR_PORT", "4002"))
     if port in (4001, 7496):
         raise RuntimeError("IB fallback refuses a live trading port")
@@ -75,9 +78,12 @@ def main():
     ib.RequestTimeout = 35
     ib.TimezoneTWS = os.environ.get("IBKR_TWS_TIMEZONE", "UTC")
     try:
-        ib.connect(os.environ.get("IBKR_HOST", "127.0.0.1"), port,
-                   clientId=int(os.environ.get("IBKR_CLIENT_ID", "98")),
-                   timeout=15, readonly=True)
+        try:
+            ib.connect(os.environ.get("IBKR_HOST", "127.0.0.1"), port,
+                       clientId=int(os.environ.get("IBKR_CLIENT_ID", "98")),
+                       timeout=15, readonly=True)
+        except Exception as exc:
+            raise SystemExit(f"IB fallback unavailable: read-only connection failed on port {port}: {exc}") from exc
         for symbol in missing:
             try:
                 frame = fetch_missing_close(ib, symbol, close_ts)

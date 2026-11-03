@@ -182,9 +182,10 @@ and runs the price retrieval job. `market_data_daily_update.sh POLICY.yaml`
 refreshes stock-index constituents and general ETFs in separate yfinance passes
 into `price_data.equities_us_daily`, then strictly checks the caller's required
 ETF list through Tiingo. `required_etf_repair.sh POLICY.yaml` retries missing
-completed closes and uses read-only IB historical raw and dividend-adjusted
-daily bars if Tiingo still fails. Each missing ticker and verified source is
-logged. Both commands require the caller's policy path; this repository does
+completed closes. Set `IB_ETF_FALLBACK=1` to permit a read-only IB attempt if
+Tiingo still fails; that optional path requires `ib_async` and a reachable IB
+Gateway or TWS. Missing IB exits with a clear error and leaves the audit failed.
+Each missing ticker and verified source is logged. Both commands require the caller's policy path; this repository does
 not own any application's ETF list or schedule. Set `MARKET_DATA_PYTHON` to
 choose the interpreter, or let the scripts use `python` on the caller's path.
 
