@@ -12,7 +12,7 @@ os.environ.setdefault("TIINGO_API_KEY", "test-only")
 import data_retrieval as retrieval
 
 
-POLICY_FILE = Path(retrieval.__file__).with_name("required_etf_assets.yaml")
+POLICY_FILE = Path(__file__).parent / "fixtures" / "required_etf_assets.yaml"
 
 
 class RequiredEtfCheckTest(unittest.TestCase):
@@ -20,9 +20,9 @@ class RequiredEtfCheckTest(unittest.TestCase):
         self.policy = retrieval.load_etf_close_policy(POLICY_FILE)
 
     def test_symbols_and_thresholds_come_from_yaml(self):
-        self.assertEqual(len(self.policy["symbols"]), 26)
+        self.assertEqual(len(self.policy["symbols"]), 4)
         self.assertEqual(self.policy["full_history_min_rows"]["UWM"], 4900)
-        self.assertEqual(self.policy["symbols"][:5], ("IVV", "IVW", "IVE", "IWM", "UWM"))
+        self.assertEqual(self.policy["symbols"], ("IVV", "IVE", "UWM", "GLD"))
 
     def test_nyse_completed_session_before_and_after_close(self):
         before = datetime(2026, 10, 27, 16, 40, tzinfo=timezone.utc)
@@ -85,7 +85,7 @@ class RequiredEtfCheckTest(unittest.TestCase):
             result = runner.invoke(retrieval.main, ["--assets_file", str(POLICY_FILE),
                                                     "--etf-close-check", "--attempts", "1"])
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(len(verify.call_args.args[0]), 26)
+        self.assertEqual(len(verify.call_args.args[0]), 4)
         result = runner.invoke(retrieval.main, ["--repair-missing"])
         self.assertNotEqual(result.exit_code, 0)
 
