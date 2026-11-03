@@ -8,7 +8,7 @@
 - ✅ **Supports incremental updates** (only fetches new data).
 - ✅ **Stores data in PostgreSQL** with structured tables.
 - ✅ **Uses YAML for easy asset management.**
-- ✅ **Automated with `cron` for daily updates.**
+- ✅ **Command-line loaders for scheduled or manual updates.**
 
 ---
 ## **📂 Project Structure**
@@ -70,10 +70,8 @@ Or specify a custom asset file:
 
 `python data_retrieval.py --assets_file=my_assets.yaml --assets-only`
 
-⚙ Automating with Cron Job
-To schedule daily updates, add this line to crontab -e:
-
-`0 0 * * * cd /path/to/market_data && python data_retrieval.py --assets_file=my_assets.yaml --assets-only`
+Callers can schedule these commands in their own projects using their own
+asset lists, logging, and deployment environment.
 
 ### **New!**
 
@@ -151,16 +149,7 @@ PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history --code NDX
 PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history --asof 2025-09-08
 ```
 
-**Cron (daily Nasdaq-100 maintenance):**
-```cron
-5 0 * * * cd /path/to/market_data && PYTHONPATH=. python -m nasdaq_100_history.update_ndx_history >> logs/ndx_update.log 2>&1
-```
-
-The repository's scheduled market-data loader is `commodity_etf_daily.cron`. Its
-18:00 Pacific job now refreshes the Nasdaq-100 universe from QQQ, generates the
-current constituent list, pulls Nasdaq-100 prices, and then refreshes the
-commodity/ETF universe. It uses the pyenv `market_data` environment and runs
-both price loads with `--assets-only`.
+The index loader can be called directly or included in a caller-owned schedule.
 
 ### Convenience daily update script ###
 
@@ -189,19 +178,18 @@ PYTHONPATH=. python -m sp500_history.gen_sp500_yaml --mode asof --asof 2026-10-1
 ```
 
 `sp500_history/sp500_daily_update.sh` applies the update, creates an as-of YAML,
-and runs the existing price retrieval job. The repository's scheduled loader,
-`market_data_daily.cron`, now runs the Nasdaq-100 update, the S&P 500 update,
-and the commodity/ETF update together at 18:00 Pacific. Both index price pulls
-write through `data_retrieval.py` into `price_data.equities_us_daily`. The
-scheduled price refresh uses yfinance explicitly, so it does not consume the
-Tiingo Starter allowance (50 requests/hour, 1,000/day, 500 unique symbols/month),
-and deduplicates overlapping symbols before the single retrieval pass.
+and runs the price retrieval job. `market_data_daily_update.sh POLICY.yaml`
+refreshes stock-index constituents and general ETFs in separate yfinance passes
+into `price_data.equities_us_daily`, then strictly checks the caller's required
+ETF list through Tiingo. `required_etf_repair.sh POLICY.yaml` retries missing
+completed closes and uses read-only IB historical raw and dividend-adjusted
+daily bars if Tiingo still fails. Each missing ticker and verified source is
+logged. Both commands require the caller's policy path; this repository does
+not own any application's ETF list or schedule. Set `MARKET_DATA_PYTHON` to
+choose the interpreter, or let the scripts use `python` on the caller's path.
 
-The S&P-only script can still be run manually or scheduled independently:
-
-```cron
-5 0 * * * cd /path/to/market_data && PYTHONPATH=. ./sp500_history/sp500_daily_update.sh >> logs/sp500_update.log 2>&1
-```
+The S&P-only script can still be run independently with
+`./sp500_history/sp500_daily_update.sh`.
 
 Query historical membership with the shared helper:
 
@@ -295,14 +283,13 @@ prints for point-in-time backtests.
 
 `hy_oas.py` stores FRED series `BAMLH0A0HYM2` in the existing
 `eco.release_content`, `eco.release_schedule`, and `eco.release_data` tables.
-Run the historical import once, then append the line in `hy_oas_daily.cron`
-to the existing user crontab for a 07:30 Pacific daily refresh. The script
-uses the same `.env`, `database.ini`, and pyenv `market_data` environment as
-the other loaders.
+Run the historical import once, then call `hy_oas_daily_update.sh` on the
+schedule chosen by the consuming project. The script uses the same `.env` and
+`database.ini` as the other loaders.
 
 ```bash
 PYENV_VERSION=market_data pyenv exec python hy_oas.py backfill \
-  --archive /home/captain/projects/strader/etf_factors/data/hy_oas_fred_archive.csv
+  --archive /path/to/hy_oas_fred_archive.csv
 PYENV_VERSION=market_data pyenv exec python hy_oas.py refresh
 ```
 

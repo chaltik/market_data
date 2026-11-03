@@ -20,3 +20,4 @@ lxml
 python-dateutil
 tenacity
 pandas_market_calendars
+ib_async>=2.1,<3
