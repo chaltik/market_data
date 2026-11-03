@@ -1,8 +1,9 @@
 # Dow Jones membership
 
 `DJIA` uses the existing `market_indices` tables. No new table or schema
-migration is required. Do **not** rerun `create_market_indices_tables.sql` on a
-populated database: that bootstrap script drops the index tables first.
+migration is required. `create_market_indices_tables.sql` is a non-destructive
+bootstrap that can be rerun on a populated database. `IF NOT EXISTS` preserves
+existing tables and data; it does not migrate or validate a changed schema.
 
 ## One-off history import
 
