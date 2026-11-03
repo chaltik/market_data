@@ -1,0 +1,79 @@
+# Explicit name-to-ticker crosswalk for the dated Wikipedia Dow snapshots.
+# Legacy symbols identify the security at the time; they do not guarantee
+# that today's price vendor still serves its historical prices.
+"3M Company": MMM
+"AT&T Corporation": T
+"AT&T Inc.": T
+"Alcoa Inc.": AA
+"Allied-Signal Incorporated": ALD
+"AlliedSignal Incorporated": ALD
+"Alphabet Inc.": GOOGL
+"Altria Group Incorporated": MO
+"Altria Group, Incorporated": MO
+"Aluminum Company of America": AA
+"Amazon.com, Inc.": AMZN
+"American Express Company": AXP
+"American International Group, Inc.": AIG
+"Amgen Inc.": AMGN
+"Apple Inc.": AAPL
+"Bank of America Corporation": BAC
+"Bethlehem Steel Corporation": BS
+"Caterpillar Inc.": CAT
+"Chevron Corporation": CVX
+"Cisco Systems, Inc.": CSCO
+"Citigroup Inc.": C
+"Dow Inc.": DOW
+"DowDuPont Inc.": DWDP
+"E.I. du Pont de Nemours & Company": DD
+"Eastman Kodak Company": EK
+"Exxon Corporation": XON
+"Exxon Mobil Corporation": XOM
+"F. W. Woolworth Company": Z
+"General Electric Company": GE
+"General Motors Corporation": GM
+"Goodyear Tire and Rubber Company": GT
+"Hewlett-Packard Company": HPQ
+"Honeywell International": HON
+"Honeywell International Inc.": HON
+"Honeywell Technologies Inc.": HON
+"Intel Corporation": INTC
+"International Business Machines Corporation": IBM
+"International Paper Company": IP
+"J.P. Morgan & Company": JPM
+"JPMorgan Chase & Co.": JPM
+"Johnson & Johnson": JNJ
+"Kraft Foods Inc .": KFT
+"Kraft Foods Inc.": KFT
+"McDonald's Corporation": MCD
+"Merck & Co., Inc.": MRK
+"Microsoft Corporation": MSFT
+"Minnesota Mining & Manufacturing Company": MMM
+"Nike, Inc.": NKE
+"Nvidia Corporation": NVDA
+"Pfizer Inc.": PFE
+"Philip Morris Companies Inc.": MO
+"Raytheon Technologies Corporation": RTX
+"SBC Communications Inc.": SBC
+"Salesforce, Inc.": CRM
+"Sears Roebuck & Company": S
+"Texaco Incorporated": TX
+"The Boeing Company": BA
+"The Coca-Cola Company": KO
+"The Goldman Sachs Group, Inc.": GS
+"The Home Depot, Inc.": HD
+"The Procter & Gamble Company": PG
+"The Sherwin-Williams Company": SHW
+"The Travelers Companies, Inc.": TRV
+"The Walt Disney Company": DIS
+"Travelers Inc.": TRV
+"Union Carbide Corporation": UK
+"United Technologies Corporation": UTX
+"UnitedHealth Group Inc.": UNH
+"UnitedHealth Group Incorporated": UNH
+"Verizon Communications Inc.": VZ
+"Visa Inc.": V
+"Wal-Mart Stores, Inc.": WMT
+"Walgreens Boots Alliance, Inc.": WBA
+"Walmart Inc.": WMT
+"Walmart Inc. (formerly Wal-Mart Stores, Inc.)": WMT
+"Westinghouse Electric Corporation": WX
