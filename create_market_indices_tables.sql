@@ -130,6 +130,14 @@ VALUES (
 )
 ON CONFLICT (code) DO NOTHING;
 
+INSERT INTO market_indices.indices(code, name, provider, methodology_url, notes)
+VALUES (
+  'DJIA', 'Dow Jones Industrial Average', 'S&P Dow Jones Indices',
+  'https://www.spglobal.com/spdji/en/indices/equity/dow-jones-industrial-average/',
+  'Historical component snapshots from May 1991; daily forward proxy from DIA holdings.'
+)
+ON CONFLICT (code) DO NOTHING;
+
 COMMIT;
 
 -- Constituents for an index code as-of a date (defaults to today)

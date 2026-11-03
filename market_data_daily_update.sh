@@ -26,14 +26,19 @@ asof="$(TZ=America/Los_Angeles date +%F)"
 # Refresh the approximate S&P 500 universe from State Street's SPY holdings,
 # then pull prices into the same price_data.equities_us_daily table.
 sp500_tmpfile="$(mktemp -t sp500_today_XXXX.yaml)"
-trap 'rm -f "$ndx_tmpfile" "$sp500_tmpfile" "$combined_tmpfile"' EXIT
+djia_tmpfile="$(mktemp -t djia_today_XXXX.yaml)"
+trap 'rm -f "$ndx_tmpfile" "$sp500_tmpfile" "$djia_tmpfile" "$combined_tmpfile"' EXIT
 "${PYTHON[@]}" -m sp500_history.update_sp500_history --code SP500 --asof "$asof"
 "${PYTHON[@]}" -m sp500_history.gen_sp500_yaml \
   --code SP500 --mode asof --asof "$asof" --output "$sp500_tmpfile"
 
+# DIA publishes a dated workbook. The loader rejects stale or incomplete files.
+"${PYTHON[@]}" -m djia_history.load_djia --daily
+"${PYTHON[@]}" -m djia_history.gen_djia_yaml --asof "$asof" --output "$djia_tmpfile"
+
 # Merge all scheduled universes before retrieval. The set removes overlap
-# between NDX, S&P 500, and ETF symbols, so each symbol is requested once.
-"${PYTHON[@]}" - "$ndx_tmpfile" "$sp500_tmpfile" \
+# between NDX, S&P 500, DJIA, and ETF symbols, so each symbol is requested once.
+"${PYTHON[@]}" - "$ndx_tmpfile" "$sp500_tmpfile" "$djia_tmpfile" \
   "$ROOT/commodity_etf_assets.yaml" "$ROOT/required_etf_assets.yaml" "$combined_tmpfile" <<'PY'
 import sys
 import yaml
