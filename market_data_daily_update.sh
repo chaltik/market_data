@@ -2,6 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -ne 1 || ! -f "$1" ]]; then
+  echo "Usage: $0 REQUIRED_ETF_ASSETS.yaml" >&2
+  exit 2
+fi
+REQUIRED_ETF_ASSETS="$(realpath "$1")"
 LOG_DIR="$ROOT/logs"
 mkdir -p "$LOG_DIR"
 
@@ -16,7 +21,8 @@ PYTHON=("$PYENV" exec python)
 # prices for the current constituents. A failed universe check stops the job.
 ndx_tmpfile="$(mktemp -t ndx_today_XXXX.yaml)"
 combined_tmpfile="$(mktemp -t market_data_today_XXXX.yaml)"
-trap 'rm -f "$ndx_tmpfile" "$combined_tmpfile"' EXIT
+etf_tmpfile="$(mktemp -t market_data_etfs_XXXX.yaml)"
+trap 'rm -f "$ndx_tmpfile" "$combined_tmpfile" "$etf_tmpfile"' EXIT
 
 asof="$(TZ=America/Los_Angeles date +%F)"
 "${PYTHON[@]}" -m nasdaq_100_history.update_ndx_history --code NDX --asof "$asof"
@@ -27,7 +33,7 @@ asof="$(TZ=America/Los_Angeles date +%F)"
 # then pull prices into the same price_data.equities_us_daily table.
 sp500_tmpfile="$(mktemp -t sp500_today_XXXX.yaml)"
 djia_tmpfile="$(mktemp -t djia_today_XXXX.yaml)"
-trap 'rm -f "$ndx_tmpfile" "$sp500_tmpfile" "$djia_tmpfile" "$combined_tmpfile"' EXIT
+trap 'rm -f "$ndx_tmpfile" "$sp500_tmpfile" "$djia_tmpfile" "$combined_tmpfile" "$etf_tmpfile"' EXIT
 "${PYTHON[@]}" -m sp500_history.update_sp500_history --code SP500 --asof "$asof"
 "${PYTHON[@]}" -m sp500_history.gen_sp500_yaml \
   --code SP500 --mode asof --asof "$asof" --output "$sp500_tmpfile"
@@ -36,26 +42,31 @@ trap 'rm -f "$ndx_tmpfile" "$sp500_tmpfile" "$djia_tmpfile" "$combined_tmpfile"'
 "${PYTHON[@]}" -m djia_history.load_djia --daily
 "${PYTHON[@]}" -m djia_history.gen_djia_yaml --asof "$asof" --output "$djia_tmpfile"
 
-# Merge all scheduled universes before retrieval. The set removes overlap
-# between NDX, S&P 500, DJIA, and ETF symbols, so each symbol is requested once.
+# Merge stock-index constituents. ETFs are loaded in a separate pass.
 "${PYTHON[@]}" - "$ndx_tmpfile" "$sp500_tmpfile" "$djia_tmpfile" \
-  "$ROOT/commodity_etf_assets.yaml" "$ROOT/required_etf_assets.yaml" "$combined_tmpfile" <<'PY'
+  "$ROOT/commodity_etf_assets.yaml" "$REQUIRED_ETF_ASSETS" "$combined_tmpfile" "$etf_tmpfile" <<'PY'
 import sys
 import yaml
 
-symbols = set()
-for path in sys.argv[1:-2]:
+stocks = set()
+for path in sys.argv[1:4]:
     with open(path) as handle:
         assets = yaml.safe_load(handle) or {}
-    symbols.update(str(symbol) for symbol in assets.get("equities", []))
+    stocks.update(str(symbol) for symbol in assets.get("equities", []))
 
-# The required factor and replica ETFs are verified from Tiingo below, never Yahoo.
-with open(sys.argv[-2]) as handle:
+with open(sys.argv[4]) as handle:
+    generic = yaml.safe_load(handle) or {}
+with open(sys.argv[5]) as handle:
     required = yaml.safe_load(handle) or {}
-symbols.difference_update(required.get("equities", []))
+required_etfs = set(required.get("equities", []))
+generic_etfs = set(generic.get("equities", [])) - required_etfs
+if stocks & (generic_etfs | required_etfs):
+    raise SystemExit("ETF symbols overlap an index constituent universe")
 
-with open(sys.argv[-1], "w") as handle:
-    yaml.safe_dump({"equities": sorted(symbols)}, handle, sort_keys=False)
+with open(sys.argv[6], "w") as handle:
+    yaml.safe_dump({"equities": sorted(stocks)}, handle, sort_keys=False)
+with open(sys.argv[7], "w") as handle:
+    yaml.safe_dump({"equities": sorted(generic_etfs)}, handle, sort_keys=False)
 PY
 
 # data_retrieval.py loads .env itself and writes to the existing
@@ -65,9 +76,13 @@ PY
   --assets_file "$combined_tmpfile" \
   --assets-only \
   --price-provider yfinance
+"${PYTHON[@]}" "$ROOT/data_retrieval.py" \
+  --assets_file "$etf_tmpfile" \
+  --assets-only \
+  --price-provider yfinance
 
 # The broad price pass can receive an older nonempty Yahoo response. Refetch
 # these live-book ETFs and fail the cron if the last completed close is absent.
 # All factor and replica-book ETFs use Tiingo EOD.
 "${PYTHON[@]}" "$ROOT/data_retrieval.py" \
-  --assets_file "$ROOT/required_etf_assets.yaml" --etf-close-check
+  --assets_file "$REQUIRED_ETF_ASSETS" --etf-close-check

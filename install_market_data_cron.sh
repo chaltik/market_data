@@ -7,15 +7,19 @@ job="$root/market_data_daily_update.sh"
 fred_job="$root/hy_oas_daily_update.sh"
 repair_job="$root/required_etf_repair.sh"
 deployment_root="/home/captain/projects/market_data"
-expected_fred="30 7 * * * $deployment_root/hy_oas_daily_update.sh >> $deployment_root/logs/hy_oas_daily.log 2>&1"
-expected="0 18 * * * $deployment_root/market_data_daily_update.sh >> $deployment_root/logs/market_data_daily.log 2>&1"
-expected_repair_evening="15 19 * * * $deployment_root/required_etf_repair.sh >> $deployment_root/logs/required_etf_repair.log 2>&1"
-expected_repair_morning="0 7 * * * $deployment_root/required_etf_repair.sh >> $deployment_root/logs/required_etf_repair.log 2>&1"
-
-if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--check" ) ]]; then
-  echo "Usage: $0 [--check]" >&2
+if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$1" != "--check" ) ]]; then
+  echo "Usage: $0 [--check] REQUIRED_ETF_ASSETS.yaml" >&2
   exit 2
 fi
+required_etf_assets="$(realpath "${!#}")"
+if [[ ! -f "$required_etf_assets" ]]; then
+  echo "Required ETF assets file is missing: $required_etf_assets" >&2
+  exit 2
+fi
+expected_fred="30 7 * * * $deployment_root/hy_oas_daily_update.sh >> $deployment_root/logs/hy_oas_daily.log 2>&1"
+expected="0 18 * * * $deployment_root/market_data_daily_update.sh $required_etf_assets >> $deployment_root/logs/market_data_daily.log 2>&1"
+expected_repair_evening="15 19 * * * $deployment_root/required_etf_repair.sh $required_etf_assets >> $deployment_root/logs/required_etf_repair.log 2>&1"
+expected_repair_morning="0 7 * * * $deployment_root/required_etf_repair.sh $required_etf_assets >> $deployment_root/logs/required_etf_repair.log 2>&1"
 
 if [[ ! -x "$job" ]]; then
   echo "Daily update script is missing or not executable: $job" >&2

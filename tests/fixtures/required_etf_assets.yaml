@@ -1,0 +1,13 @@
+# Generic test fixture. Production passes a caller-owned policy path to cron.
+equities:
+  - IVV
+  - IVE
+  - UWM
+  - GLD
+etf_close_policy:
+  full_history_min_rows:
+    IVV: 6000
+    UWM: 4900
+  default_full_history_min_rows: 500
+  min_recent_history_rows: 10
+  recent_history_days: 35
