@@ -1,4 +1,4 @@
--- One-week, non-destructive Yahoo options quote pilot.
+-- Non-destructive Yahoo options quote pilot.
 -- No DROP statements. Existing definitions are not migrated by IF NOT EXISTS.
 BEGIN;
 

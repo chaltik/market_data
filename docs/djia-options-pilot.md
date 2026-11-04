@@ -7,11 +7,11 @@ forward-only quote archive, **not** historical option data. The timestamp
 `captured_at` records when each expiration chain was fetched;
 `last_trade_at` is Yahoo's trade timestamp, not a quote timestamp.
 
-The one-week pilot runs November 4–10, 2026 on the five trading days at
-10:00–16:00 Eastern, inclusive (seven polls per day). The installed cron line
-is documented in `options_pilot.cron`. After November 10, the collector's
-date guard makes the entry inert; remove it from crontab when reviewing the
-pilot. The independent market-hours guard prevents weekend requests.
+The one-month pilot runs November 4–December 4, 2026 at 10:00–16:00 Eastern,
+hourly on full NYSE sessions. The collector consults the NYSE calendar to skip
+holidays and post-close hours on early-close days. The installed cron line is
+documented in `options_pilot.cron`. After December 4, the collector's date
+guard makes the entry inert; remove it from crontab when reviewing the pilot.
 
 Only a contract meeting **all** of these thresholds is stored:
 
@@ -33,7 +33,7 @@ It is non-destructive and may be rerun. For a read-only sample:
 python collect_djia_options.py --symbols AAPL --max-expirations 1 --dry-run
 ```
 
-Measure the pilot after a week:
+Measure the pilot after a month:
 
 ```sql
 SELECT count(*) AS quotes,

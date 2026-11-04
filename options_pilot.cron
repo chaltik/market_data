@@ -1,5 +1,5 @@
-# Five NYSE trading sessions, 2026-11-04 through 2026-11-10, hourly at
-# 10:00-16:00 Eastern (07:00-13:00 Pacific after the DST transition).
-# The script has independent date/weekday/hour guards, so outside this window
-# no Yahoo requests are made. Install alongside, not over, existing crontab.
-0 7-13 4-10 11 * /home/captain/.pyenv/versions/market_data/bin/python /home/captain/projects/market_data/collect_djia_options.py --start-date 2026-11-04 --end-date 2026-11-10 --market-hours >> /home/captain/projects/market_data/logs/djia_options_pilot.log 2>&1
+# One calendar month, 2026-11-04 through 2026-12-04, hourly at
+# 10:00-16:00 Eastern (07:00-13:00 Pacific). The collector consults the NYSE
+# calendar and skips holidays, weekends, and hours after early closes.
+# Its independent date guard makes this cron entry inert after December 4.
+0 7-13 * * 1-5 /home/captain/.pyenv/versions/market_data/bin/python /home/captain/projects/market_data/collect_djia_options.py --start-date 2026-11-04 --end-date 2026-12-04 --market-hours >> /home/captain/projects/market_data/logs/djia_options_pilot.log 2>&1

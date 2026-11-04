@@ -6,11 +6,12 @@ import math
 import re
 import sys
 import time
-from datetime import date, datetime, time as clock_time, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import psycopg2
 from psycopg2.extras import execute_values
+import pandas_market_calendars as market_calendars
 import yfinance as yf
 
 from db_config import config
@@ -71,6 +72,19 @@ def rate_limited(error):
     return "429" in message or "rate limit" in message or "too many requests" in message
 
 
+def within_market_window(now_et):
+    """Allow hourly polls from 10:00 ET through the NYSE close, including early closes."""
+    schedule = market_calendars.get_calendar("NYSE").schedule(
+        start_date=now_et.date(), end_date=now_et.date())
+    if schedule.empty:
+        return False
+    session = schedule.iloc[0]
+    now_utc = now_et.astimezone(timezone.utc)
+    first_poll = session["market_open"].to_pydatetime() + timedelta(minutes=30)
+    last_poll = session["market_close"].to_pydatetime() + timedelta(minutes=5)
+    return first_poll <= now_utc <= last_poll
+
+
 def fetch_universe(cur, requested):
     cur.execute("SELECT max(as_of_date) FROM market_indices.seed_snapshots s JOIN market_indices.indices i USING (index_id) WHERE i.code='DJIA'")
     universe_asof = cur.fetchone()[0]
@@ -124,9 +138,8 @@ def run(args):
     if args.end_date and now_et.date() > args.end_date:
         print("Options pilot ended; no requests made")
         return 0
-    if args.market_hours and (now_et.weekday() >= 5 or
-                              not clock_time(10, 0) <= now_et.time() <= clock_time(16, 5)):
-        print("Outside pilot market-hours window; no requests made")
+    if args.market_hours and not within_market_window(now_et):
+        print("NYSE closed or outside pilot market-hours window; no requests made")
         return 0
     params = config(filename=args.db_config) if args.db_config else config()
     conn = psycopg2.connect(**params)
