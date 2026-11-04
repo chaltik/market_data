@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from collect_djia_options import normalize_contract, rate_limited
+from collect_djia_options import ET, normalize_contract, rate_limited, within_market_window
 
 
 CAPTURED = datetime(2026, 11, 3, 20, 0, tzinfo=timezone.utc)
@@ -51,3 +51,12 @@ def test_bad_contract_or_nan_is_rejected():
 def test_rate_limit_detection():
     assert rate_limited(RuntimeError("HTTP 429 Too Many Requests"))
     assert not rate_limited(ValueError("empty option chain"))
+
+
+def test_market_window_uses_nyse_holidays_and_early_closes():
+    assert not within_market_window(datetime(2026, 11, 26, 10, 0, tzinfo=ET))
+    assert within_market_window(datetime(2026, 11, 27, 12, 0, tzinfo=ET))
+    assert within_market_window(datetime(2026, 11, 27, 13, 0, tzinfo=ET))
+    assert not within_market_window(datetime(2026, 11, 27, 14, 0, tzinfo=ET))
+    assert within_market_window(datetime(2026, 12, 4, 16, 0, tzinfo=ET))
+    assert not within_market_window(datetime(2026, 12, 4, 16, 6, tzinfo=ET))
