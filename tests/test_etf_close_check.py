@@ -34,20 +34,22 @@ class RequiredEtfCheckTest(unittest.TestCase):
         close_ts = pd.Timestamp("2026-10-26 20:00Z")
         old = pd.DataFrame({"ts": [pd.Timestamp("2026-10-23 20:00Z")],
                             "symbol": ["IVV"], "close": [100.0], "adj_close": [99.0]})
-        with patch.object(retrieval, "fetch_equity_prices", return_value=old), \
+        with patch.object(retrieval, "check_metadata_exists", return_value=True), \
+             patch.object(retrieval, "fetch_equity_prices", return_value=old), \
              patch.object(retrieval, "save_equity_prices_bulk") as save:
             self.assertFalse(retrieval.refresh_completed_etf_bar("IVV", close_ts, self.policy))
         save.assert_not_called()
 
     def test_factor_and_replica_use_strict_tiingo_with_yaml_rules(self):
         close_ts = pd.Timestamp("2026-10-26 20:00Z")
-        for symbol, expected_start in (("IVV", "2000-01-01"), ("GLD", "2026-09-21")):
+        for symbol, expected_start in (("IVV", "1990-01-01"), ("GLD", "2026-09-21")):
             frame = pd.DataFrame({"ts": [close_ts], "symbol": [symbol],
                                   "close": [101.0], "adj_close": [99.0]})
             policy = dict(self.policy)
             policy["full_history_min_rows"] = {"IVV": 1}
             policy["min_recent_history_rows"] = 1
             with patch.object(retrieval, "fetch_equity_prices", return_value=frame) as fetch, \
+                 patch.object(retrieval, "check_metadata_exists", return_value=True), \
                  patch.object(retrieval, "save_equity_prices_bulk") as save, \
                  patch.object(retrieval, "check_etf_history_coverage"), \
                  patch.object(retrieval, "stored_completed_etf_bar", return_value=True):

@@ -1177,9 +1177,11 @@ def check_etf_history_coverage(symbol, frame):
 
 def refresh_completed_etf_bar(symbol, close_ts, policy, *, full_history=False):
     """Strict Tiingo refresh with exact-session, coverage and persistence checks."""
+    if not check_metadata_exists(symbol, "equities_us"):
+        save_equity_metadata(symbol)
     session_date = close_ts.tz_convert("America/New_York").date()
     full_history = full_history or symbol in policy["full_history_min_rows"]
-    start_date = ("2000-01-01" if full_history else
+    start_date = ("1990-01-01" if full_history else
                   (session_date - timedelta(days=policy["recent_history_days"])).isoformat())
     frame = fetch_equity_prices(symbol, start_date=start_date,
                                 end_date=session_date.isoformat(),
