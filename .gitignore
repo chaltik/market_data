@@ -8,5 +8,8 @@
 !*.example.yaml
 !*.example.yml
 !required_etf_assets.yaml
+# Versioned source-backed registries used by the generic loaders.
+!equity_lifecycle_events.yaml
+!russell_1000_history/constituent_exclusions.yaml
 __pycache__/
 logs/

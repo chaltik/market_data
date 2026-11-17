@@ -1,5 +1,6 @@
 import os
 import time
+from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import yaml
@@ -32,6 +33,7 @@ TIINGO_API_KEY = os.environ.get('TIINGO_API_KEY')
 ti_client = TiingoClient({'session': True, 'api_key': TIINGO_API_KEY}) if TIINGO_API_KEY else None
 
 TIINGO_CRYPTO_URL='https://api.tiingo.com/tiingo/crypto/prices'
+EQUITY_LIFECYCLE_FILE = Path(__file__).with_name("equity_lifecycle_events.yaml")
 
 utc=pytz.UTC
 def utcnow():
@@ -48,6 +50,47 @@ def get_latest_date(table: str, date_col: str = "date"):
     query = f"SELECT MAX({date_col}) FROM {table};"
     result = run_sql(query, config())
     return result.iloc[0,0] if not result.empty else None
+
+
+@lru_cache(maxsize=1)
+def equity_lifecycle_events() -> dict[str, dict]:
+    """Read verified lifecycle cutoffs for securities no longer trading.
+
+    Vendors can retain a final acquisition value as a zero-volume daily bar.
+    These are not tradable prices and must not extend a security's history.
+    """
+    if not EQUITY_LIFECYCLE_FILE.exists():
+        return {}
+    with EQUITY_LIFECYCLE_FILE.open(encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle) or {}
+    events = payload.get("equities", {})
+    if not isinstance(events, dict):
+        raise ValueError(f"Invalid equity lifecycle registry: {EQUITY_LIFECYCLE_FILE}")
+    normalized = {}
+    for raw_symbol, event in events.items():
+        symbol = str(raw_symbol).upper()
+        if not isinstance(event, dict) or not event.get("last_trading_date"):
+            raise ValueError(f"Invalid lifecycle event for {symbol}")
+        normalized[symbol] = {**event, "last_trading_date": pd.Timestamp(event["last_trading_date"]).date()}
+    return normalized
+
+
+def equity_last_trading_date(symbol: str):
+    event = equity_lifecycle_events().get(str(symbol).upper())
+    return event["last_trading_date"] if event else None
+
+
+def apply_equity_lifecycle_cutoff(frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """Remove price rows after a registered final trading date."""
+    cutoff = equity_last_trading_date(symbol)
+    if frame.empty or cutoff is None:
+        return frame
+    dates = pd.to_datetime(frame["ts"], utc=True).dt.tz_convert("America/New_York").dt.date
+    valid = frame.loc[dates <= cutoff].copy()
+    removed = len(frame) - len(valid)
+    if removed:
+        logging.warning("Discarded %d post-lifecycle price rows for %s after %s", removed, symbol, cutoff)
+    return valid
 
 def check_metadata_exists(symbol, table, schema='price_data'):
     query = f"SELECT COUNT(*) FROM {schema}.{table} WHERE symbol = %s"
@@ -247,6 +290,13 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_clos
       - Use 'Adj Close' if present; else fall back to 'Close'.
     """
 
+    lifecycle_cutoff = equity_last_trading_date(symbol)
+    if lifecycle_cutoff is not None:
+        requested_start = pd.Timestamp(start_date).date() if start_date is not None else None
+        if requested_start is not None and requested_start > lifecycle_cutoff:
+            logging.info("Skipping %s: lifecycle ended after %s", symbol, lifecycle_cutoff)
+            return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume", "adj_close", "symbol"])
+
     latest_ts = get_latest_ts_for_symbol(symbol, "equities_us_daily", ts_col="ts")
     if start_date is None:
         if latest_ts is not None:
@@ -315,7 +365,7 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_clos
 
         out["symbol"] = symbol
         out = out.dropna(subset=["ts", "close"])  # keep only valid rows
-        return _completed_equity_bars(out)
+        return apply_equity_lifecycle_cutoff(_completed_equity_bars(out), symbol)
 
     except Exception as e:
         if price_provider == "tiingo" and strict_provider:
@@ -394,7 +444,7 @@ def fetch_equity_prices(symbol, start_date=None, end_date=None, require_adj_clos
 
     out["symbol"] = symbol
     out = out.dropna(subset=["ts", "close"])
-    return _completed_equity_bars(out)
+    return apply_equity_lifecycle_cutoff(_completed_equity_bars(out), symbol)
 
 
 def _completed_equity_bars(df, now=None):

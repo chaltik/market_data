@@ -1,0 +1,28 @@
+# Verified final trading dates. These guard the generic price loader against
+# stale vendor rows following a delisting or acquisition.
+equities:
+  DISH:
+    last_trading_date: "2023-12-29"
+    event_type: stock_for_stock_merger
+    effective_date: "2023-12-31"
+    successor_symbol: "ECHO"
+    successor_ticker_at_effective_date: "SATS"
+    conversion_ratio: 0.350877
+    successor_price_history_status: available_under_canonical_symbol
+    successor_ticker_history:
+      - ticker: "SATS"
+        end_date: "2026-06-23"
+      - ticker: "ECHO"
+        start_date: "2026-06-24"
+    source_url: "https://ir.echostar.com/news-releases/news-release-details/echostar-corporation-completes-merger-dish-network-corporation"
+    ticker_change_source_url: "https://echostar.gcs-web.com/news-releases/news-release-details/echostar-changing-stocker-ticker-sats-echo-marking-companys-next"
+    note: >-
+      Each DISH share converted into 0.350877 EchoStar shares. The canonical
+      database symbol is ECHO, whose history includes the prior SATS trading
+      history. SATS is now reused by a different issuer.
+  SGEN:
+    last_trading_date: "2023-12-13"
+    event_type: cash_acquisition
+    effective_date: "2023-12-14"
+    source_url: "https://www.sec.gov/Archives/edgar/data/78003/000119312523294930/d553734d8k.htm"
+    note: "Pfizer acquisition of Seagen completed; $229 cash consideration."
