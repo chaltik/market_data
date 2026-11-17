@@ -1,0 +1,6 @@
+# ETF holdings occasionally retain a company after its public listing has ended.
+# These exclusions are applied before snapshots and current membership are written.
+excluded_symbols:
+  HOLX:
+    effective_end_date: "2026-04-07"
+    reason: "Acquired; Tiingo reports the listing ended 2026-04-07."
